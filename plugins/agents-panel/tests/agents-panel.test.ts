@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { figure, groupByProject, modelColor, shortModel, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -29,4 +29,22 @@ test('groups keep first-seen project order', async () => {
 test('waiting line', async () => {
   expect(waitingLine(null)).toMatch(/no snapshot/)
   expect(waitingLine({ waiting: [1, 2], open: 9, snapshot: 0 } as never)).toMatch(/waiting on you: 2 · open: 9/)
+})
+
+test('sprites are 10×12 and pack into 60 cells', async () => {
+  for (const g of ['f', 'm', '-']) {
+    expect(SPRITES[g].length).toBe(12)
+    for (const row of SPRITES[g]) expect(row.length).toBe(10)
+    const bytes = Uint8Array.fromBase64(spriteCells(g, '#a855f7'))
+    expect(bytes.length).toBe(60 * 3 * 4)
+  }
+})
+
+test('activity icons and headline', async () => {
+  expect(activityIcon({ status: 'busy', tool: 'Read' })).toBe('📖')
+  expect(activityIcon({ status: 'busy', tool: 'Bash' })).toBe('⚡')
+  expect(activityIcon({ status: 'busy', tool: '' })).toBe('🧠')
+  expect(activityIcon({ status: 'idle', cache_min: -3 })).toBe('💤')
+  expect(headline([{ status: 'busy' }, { status: 'idle', cache_min: 20 }, { status: 'idle', cache_min: -1 }] as never[]))
+    .toBe('1 working · 1 waiting · 1 asleep')
 })

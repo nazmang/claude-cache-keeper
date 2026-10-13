@@ -102,16 +102,27 @@ def ancestors(pid):
 
 
 def transcript_info(sid):
-    """(time of last reply, context tokens, compacted since then, model)."""
+    """(time of last reply, context tokens, compacted since then, model, last tool)."""
     paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
     if not paths:
-        return None, 0, False, ""
+        return None, 0, False, "", ""
     p = paths[0]
     size = os.path.getsize(p)
     with open(p, "rb") as f:
         f.seek(max(0, size - TAIL_BYTES))
         lines = f.read().decode("utf-8", "replace").splitlines()
     last_ts, ctx, model, compacted_after = None, 0, "", False
+    tool = ""   # the newest assistant entry: its tool_use name, or "" for text/thinking
+    for line in reversed(lines):
+        if '"type":"assistant"' not in line:
+            continue
+        try:
+            content = (json.loads(line).get("message") or {}).get("content") or []
+        except Exception:
+            continue
+        uses = [c.get("name", "") for c in content if isinstance(c, dict) and c.get("type") == "tool_use"]
+        tool = uses[-1] if uses else ""
+        break
     for line in reversed(lines):
         if '"compact_boundary"' in line and last_ts is None and not compacted_after:
             compacted_after = True
@@ -136,7 +147,7 @@ def transcript_info(sid):
                                         "cache_creation_input_tokens"))
         model = msg.get("model", "")
         break
-    return last_ts, ctx, compacted_after, model
+    return last_ts, ctx, compacted_after, model, tool
 
 
 def sessions():
@@ -155,7 +166,7 @@ def sessions():
             if a in panes:
                 target, label = panes[a]
                 break
-        last, ctx, compacted, model = transcript_info(d.get("sessionId", ""))
+        last, ctx, compacted, model, tool = transcript_info(d.get("sessionId", ""))
         try:  # --model on the command line wins: right after a restart there are no replies yet
             argv = open(f"/proc/{pid}/cmdline", "rb").read().decode().split("\0")
             if "--model" in argv:
@@ -165,7 +176,7 @@ def sessions():
         idle = (datetime.now(timezone.utc) - last).total_seconds() / 60 if last else None
         out.append(dict(name=d.get("name") or f"(pid {pid})", pid=pid, sid=d.get("sessionId"),
                         cwd=d.get("cwd", ""), status=d.get("status", ""), target=target,
-                        label=label, idle=idle, ctx=0 if compacted else ctx, model=model))
+                        label=label, idle=idle, ctx=0 if compacted else ctx, model=model, tool=tool))
     return sorted(out, key=lambda s: (s["label"] or "~", s["name"]))
 
 
@@ -271,7 +282,8 @@ def cmd_status_json(max_age):
             "status": s["status"], "model": s["model"].replace("claude-", ""),
             "idle_min": None if s["idle"] is None else round(s["idle"], 1),
             "cache_min": None if s["idle"] is None else round(CACHE_TTL - s["idle"], 1),
-            "ctx": s["ctx"], "tmux": s["label"], "pid": s["pid"]})
+            "ctx": s["ctx"], "tmux": s["label"], "target": s["target"], "pid": s["pid"],
+            "tool": s["tool"]})
     out = json.dumps({"at": now.isoformat(timespec="seconds"), "sessions": rows,
                       "checklist": checklist()}, ensure_ascii=False)
     os.makedirs(os.path.dirname(STATUS_CACHE), exist_ok=True)

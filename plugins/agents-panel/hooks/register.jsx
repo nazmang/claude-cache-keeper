@@ -109,44 +109,115 @@ function fmtDur(v) {
   return v >= 600 ? `${Math.round(v / 60)}h` : `${Math.round(v)}m`
 }
 
+// --- pixel people -----------------------------------------------------------
+// 10×12 pixels, drawn as 10 columns × 6 rows of half blocks (▀: top pixel is
+// the foreground, bottom pixel the background). '.' is transparent.
+// H hair, S skin, E eye, C clothes (the model's colour), D darker clothes.
+export const SPRITES = {
+  f: [
+    '..HHHHHH..',
+    '.HHHHHHHH.',
+    'HHSSSSSSHH',
+    'HHSESSESHH',
+    'H.SSSSSS.H',
+    'H..SSSS..H',
+    '...CCCC...',
+    '..CCCCCC..',
+    '.CCCCCCCC.',
+    'CCCCCCCCCC',
+    '...S..S...',
+    '..DD..DD..',
+  ],
+  m: [
+    '..HHHHHH..',
+    '..HHHHHH..',
+    '..HSSSSH..',
+    '..SESSES..',
+    '..SSSSSS..',
+    '...SSSS...',
+    '..CCCCCC..',
+    '.CCCCCCCC.',
+    '.SCCCCCCS.',
+    '..DDDDDD..',
+    '..DD..DD..',
+    '..DD..DD..',
+  ],
+  '-': [
+    '...DDDD...',
+    '..DDDDDD..',
+    '..SSSSSS..',
+    '..SESSES..',
+    '..SSSSSS..',
+    '...SSSS...',
+    '..CCCCCC..',
+    '.CCCCCCCC.',
+    '.SCCCCCCS.',
+    '..CCCCCC..',
+    '..DD..DD..',
+    '..DD..DD..',
+  ],
+}
+
+// girls ginger, boys chestnut: both must read on a dark card background
+const HAIR = { f: 0xd2733a, m: 0xa86a3c, '-': 0xa86a3c }
+
+const DEFAULT = 0x01000000
+const hex = (c) => parseInt(c.slice(1), 16)
+function darker(c, k = 0.7) {
+  const n = hex(c)
+  const ch = (sh) => Math.round(((n >> sh) & 255) * k)
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
+// pixel rows (12) -> Raster cells: base64 of [codePoint, fg, bg] u32 triplets
+export function spriteCells(gender, color, { lift = false, dim = false } = {}) {
+  const rows = SPRITES[gender] || SPRITES['-']
+  const pix = lift ? [...rows.slice(1), '..........'] : rows   // busy: hop one pixel
+  const body = color ? hex(color) : 0x8a9a9c
+  const pal = {
+    H: HAIR[gender] ?? HAIR['-'], S: 0xf1c7a1, E: 0x111111,
+    C: body, D: color ? darker(color) : 0x5f6d6f,
+  }
+  const fade = (c) => (dim && c !== DEFAULT ? darker('#' + c.toString(16).padStart(6, '0'), 0.6) : c)
+  const at = (r, c) => { const ch = (pix[r] || '')[c]; return ch && ch !== '.' ? fade(pal[ch]) : DEFAULT }
+  const words = []
+  for (let r = 0; r < 12; r += 2) {
+    for (let c = 0; c < 10; c++) {
+      const top = at(r, c), bottom = at(r + 1, c)
+      if (top === DEFAULT && bottom === DEFAULT) words.push(0x20, DEFAULT, DEFAULT)
+      else if (top === DEFAULT) words.push(0x2584, bottom, DEFAULT)        // ▄
+      else words.push(0x2580, top, bottom)                                 // ▀
+    }
+  }
+  return new Uint8Array(Uint32Array.from(words).buffer).toBase64()
+}
+
+// what the agent is doing, as one glyph above its head
+export function activityIcon(s) {
+  if (s.status === 'idle') return s.cache_min !== null && s.cache_min <= 0 ? '💤' : '☕'
+  if (s.status === 'shell') return '⚙️'
+  if (s.status !== 'busy') return '❔'
+  const t = String(s.tool || '')
+  if (/^(Read|NotebookRead)$/.test(t)) return '📖'
+  if (/^(Edit|Write|NotebookEdit|MultiEdit)$/.test(t)) return '✏️'
+  if (/^(Bash|PowerShell|Monitor)$/.test(t)) return '⚡'
+  if (/^(Grep|Glob|ToolSearch|WebSearch|WebFetch)$/.test(t)) return '🔍'
+  if (/^(Agent|Task|Workflow)$/.test(t)) return '👥'
+  if (/^(SendMessage|ListAgents|ReadNotifications)$/.test(t)) return '💬'
+  if (/^mcp__/.test(t)) return '🔌'
+  return t ? '🛠️' : '🧠'
+}
+
+export function headline(sessions) {
+  const busy = sessions.filter((s) => s.status === 'busy').length
+  const asleep = sessions.filter((s) => s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0).length
+  return `${busy} working · ${sessions.length - busy - asleep} waiting · ${asleep} asleep`
+}
+
 function fmtMin(v) {
   if (v === null || v === undefined) return '—'
   if (v <= 0) return 'off'
   return v >= 600 ? `${Math.round(v / 60)}h` : `${Math.round(v)}m`
-}
-
-function teamPane(Box, Text) {
-  if (!data) return <Text dimColor>{error || 'loading…'}</Text>
-  const cl = data.checklist
-  const waiting = cl ? groupByProject(cl.waiting.map((i) => ({ ...i, project: i.project || '?' }))) : []
-  return (
-    <Box flexDirection="column">
-      {groupByProject(data.sessions).map(([project, list]) => (
-        <Box key={`tp-${project}`} flexDirection="column" marginBottom={1}>
-          <Text bold>{project}</Text>
-          {list.map((s) => (
-            <Box key={`ts-${s.pid}`} flexDirection="row">
-              <Text color={modelColor(s.model)} wrap="truncate-end">
-                {`${figure(s.gender)} ${s.display.slice(0, 11).padEnd(11)} ${shortModel(s.model).padEnd(6)}`}
-              </Text>
-              <Text dimColor={!(s.cache_min > 0)} wrap="truncate-end">
-                {` ${stateGlyph(s, frame)} ${fmtDur(s.idle_min).padStart(5)} 💾${fmtMin(s.cache_min).padStart(4)} ${s.ctx ? `${Math.round(s.ctx / 1000)}k` : '—'}`}
-              </Text>
-            </Box>
-          ))}
-        </Box>
-      ))}
-      <Text bold>{waitingLine(cl)}</Text>
-      {waiting.map(([project, items]) => (
-        <Box key={`w-${project}`} flexDirection="column">
-          <Text color="#f59e0b">{project}</Text>
-          {items.map((i) => (
-            <Text key={`wi-${i.id}`} wrap="truncate-end">{`  • ${i.title}  (${i.who})`}</Text>
-          ))}
-        </Box>
-      ))}
-    </Box>
-  )
 }
 
 export function register(on) {
@@ -175,7 +246,59 @@ export function register(on) {
   })
 
   on('ui.render', { component: 'Pane', requestId: 'team' }, ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
-    return teamPane(Box, Text)
+    const { Box, Text, Button, Raster } = $.ui.resolve(e)
+    if (!data) return <Text dimColor>{error || 'loading…'}</Text>
+    const cl = data.checklist
+    const waiting = cl ? groupByProject(cl.waiting.map((i) => ({ ...i, project: i.project || '?' }))) : []
+    let n = 0
+    // a press jumps to the agent's tmux window; a session outside tmux has none
+    const jump = (s) => async () => {
+      if (!s.target) { $.ui.toast(`${s.display}: not in tmux`); return }
+      const r = await $.process.run(['tmux', 'switch-client', '-t', s.target], { timeoutMs: 5000 })
+      if (r.exitCode !== 0) $.ui.toast(`${s.display}: ${(r.stderr || 'tmux failed').split('\n')[0]}`)
+    }
+    const card = (s) => {
+      n += 1
+      const busy = s.status === 'busy'
+      const asleep = s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0
+      const pic = Raster
+        ? <Raster key={`r-${s.pid}`} columns={10} rows={6}
+            cells={spriteCells(s.gender, modelColor(s.model), { lift: busy && frame % 2 === 1, dim: asleep })} />
+        : <Text color={modelColor(s.model)}>{figure(s.gender)}</Text>
+      // a Button holds text only: picture above, the clickable name under it
+      return (
+        <Box key={`a-${s.pid}`} flexDirection="column" alignItems="center" width={14}>
+          <Text>{activityIcon(s)}</Text>
+          {pic}
+          <Button key={`b-${s.pid}`} label={s.display.slice(0, 10)}
+            hotkey={n <= 9 ? String(n) : undefined} plain onPress={jump(s)}>
+            <Text color={modelColor(s.model)} bold={busy}>{s.display.slice(0, 10)}</Text>
+          </Button>
+          <Text dimColor wrap="truncate-end">{`${shortModel(s.model)} ${fmtMin(s.cache_min)}`}</Text>
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column">
+        <Text bold>{headline(data.sessions)}</Text>
+        {groupByProject(data.sessions).map(([project, list]) => (
+          <Box key={`tp-${project}`} flexDirection="column" marginTop={1}>
+            <Text dimColor>{project}</Text>
+            <Box flexDirection="row" flexWrap="wrap" columnGap={1}>{list.map(card)}</Box>
+          </Box>
+        ))}
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>{waitingLine(cl)}</Text>
+          {waiting.map(([project, items]) => (
+            <Box key={`w-${project}`} flexDirection="column">
+              <Text color="#f59e0b">{project}</Text>
+              {items.map((i) => (
+                <Text key={`wi-${i.id}`} wrap="truncate-end">{`  • ${i.title}  (${i.who})`}</Text>
+              ))}
+            </Box>
+          ))}
+        </Box>
+      </Box>
+    )
   })
 }
