@@ -1,0 +1,1 @@
+{ "description": "cache-keeper: compact before the prompt cache expires", "modules": ["./register.js"] }

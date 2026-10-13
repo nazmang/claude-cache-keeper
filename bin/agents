@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""agents - live Claude Code sessions on this machine, and prompt-cache upkeep.
+
+  agents status                 all live sessions: status, idle time, cache left,
+                                context, model, tmux window
+  agents compact-idle [--dry-run]
+                                compact sessions whose cache is about to expire
+                                (idle 53..59 min; the cache-keeper mod inside a
+                                session fires at 50), if they run in tmux, are
+                                idle, have an empty input box and an uncompacted
+                                context above MIN_CTX tokens
+  agents compact <name> [--wait]
+                                compact one session now (same checks except idle
+                                time); --wait - wait until done (exit 0 = done)
+  agents up <project> [role...]   start a project's team (command from projects.conf)
+  agents down <project> [role...] stop a project's team
+
+Why: the prompt cache lives 1 hour from the last request. A session that wakes
+up after an hour of idling writes its whole context into the cache again at
+full price. /compact at minute 50-59 still reads the context from the cache
+(cheap) and leaves a small summary, so the next wake-up costs next to nothing.
+
+Projects: ~/.config/agents/projects.conf, lines "project | dir | up | down".
+Log: ~/.local/state/agents/compact-idle.log
+Env: COMPACT_FROM, COMPACT_TO (minutes), MIN_CTX (tokens).
+"""
+import json, os, re, subprocess, sys, time, glob
+from datetime import datetime, timezone
+
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+CONF = os.path.expanduser("~/.config/agents/projects.conf")
+LOG = os.path.expanduser("~/.local/state/agents/compact-idle.log")
+CACHE_TTL = 60
+COMPACT_FROM = int(os.environ.get("COMPACT_FROM", 53))  # the cache-keeper mod compacts at 50; this is the fallback
+COMPACT_TO = int(os.environ.get("COMPACT_TO", 59))
+MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
+TAIL_BYTES = 4 * 1024 * 1024
+
+
+def log(msg):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    line = f"{datetime.now().isoformat(timespec='seconds')} {msg}"
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+    print(line)
+
+
+def tmux(*args):
+    r = subprocess.run(["tmux", *args], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def tmux_panes():
+    """pane_pid -> ("=session:index", "session:name"); target by index, names may repeat."""
+    out = {}
+    for line in tmux("list-panes", "-a", "-F",
+                     "#{pane_pid}\t#{session_name}\t#{window_index}\t#{window_name}").splitlines():
+        pid, s, wi, wn = line.split("\t")
+        out[int(pid)] = (f"={s}:{wi}", f"{s}:{wn}")
+    return out
+
+
+def ancestors(pid):
+    seen = []
+    for _ in range(10):
+        seen.append(pid)
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except Exception:
+            break
+        if pid <= 1:
+            break
+    return seen
+
+
+def transcript_info(sid):
+    """(time of last reply, context tokens, compacted since then, model)."""
+    paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
+    if not paths:
+        return None, 0, False, ""
+    p = paths[0]
+    size = os.path.getsize(p)
+    with open(p, "rb") as f:
+        f.seek(max(0, size - TAIL_BYTES))
+        lines = f.read().decode("utf-8", "replace").splitlines()
+    last_ts, ctx, model, compacted_after = None, 0, "", False
+    for line in reversed(lines):
+        if '"compact_boundary"' in line and last_ts is None and not compacted_after:
+            compacted_after = True
+            try:  # idle counts from the compaction, not from the reply before it
+                bts = datetime.fromisoformat(json.loads(line)["timestamp"].replace("Z", "+00:00"))
+            except Exception:
+                bts = None
+        if '"type":"assistant"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        msg = d.get("message") or {}
+        u = msg.get("usage") or {}
+        if not u:
+            continue
+        last_ts = datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00"))
+        if compacted_after and bts:
+            last_ts = bts
+        ctx = sum(u.get(k, 0) for k in ("input_tokens", "cache_read_input_tokens",
+                                        "cache_creation_input_tokens"))
+        model = msg.get("model", "")
+        break
+    return last_ts, ctx, compacted_after, model
+
+
+def sessions():
+    panes = tmux_panes()
+    out = []
+    for f in glob.glob(os.path.join(SESSIONS_DIR, "*.json")):
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        pid = d.get("pid")
+        if not pid or not os.path.exists(f"/proc/{pid}") or d.get("kind") != "interactive":
+            continue
+        target = label = None
+        for a in ancestors(pid):
+            if a in panes:
+                target, label = panes[a]
+                break
+        last, ctx, compacted, model = transcript_info(d.get("sessionId", ""))
+        try:  # --model on the command line wins: right after a restart there are no replies yet
+            argv = open(f"/proc/{pid}/cmdline", "rb").read().decode().split("\0")
+            if "--model" in argv:
+                model = argv[argv.index("--model") + 1]
+        except Exception:
+            pass
+        idle = (datetime.now(timezone.utc) - last).total_seconds() / 60 if last else None
+        out.append(dict(name=d.get("name") or f"(pid {pid})", pid=pid, sid=d.get("sessionId"),
+                        cwd=d.get("cwd", ""), status=d.get("status", ""), target=target,
+                        label=label, idle=idle, ctx=0 if compacted else ctx, model=model))
+    return sorted(out, key=lambda s: (s["label"] or "~", s["name"]))
+
+
+def input_empty(target):
+    screen = tmux("capture-pane", "-e", "-p", "-t", target)
+    lines = [l for l in screen.splitlines() if "❯" in l]
+    if not lines:
+        return False
+    rest = lines[-1].split("❯", 1)[1].replace("\xa0", " ")
+    if "\x1b[2m" in rest:          # dim placeholder text = empty
+        return True
+    return re.sub(r"\x1b\[[0-9;]*m|\s", "", rest) == ""
+
+
+def do_compact(s, dry):
+    why = None
+    if not s["target"]:
+        why = "not in tmux"
+    elif s["status"] != "idle":
+        why = f"status {s['status']}"
+    elif not input_empty(s["target"]):
+        why = "input box has a draft"
+    if why:
+        log(f"skip  {s['name']}: {why}")
+        return False
+    if dry:
+        log(f"dry   {s['name']}: would compact ({s['ctx']//1000}k, idle {s['idle']:.0f} min)")
+        return True
+    tmux("send-keys", "-t", s["target"], "-l", "/compact")
+    time.sleep(0.5)
+    tmux("send-keys", "-t", s["target"], "Enter")
+    log(f"sent  {s['name']}: /compact ({s['ctx']//1000}k, idle {s['idle']:.0f} min, {s['label']})")
+    return True
+
+
+def cmd_status():
+    print(f"{'session':28} {'status':7} {'idle':>8} {'cache':>7} {'context':>9}  model / window")
+    for s in sessions():
+        idle = f"{s['idle']:.0f}m" if s["idle"] is not None else "—"
+        if s["idle"] is None:
+            cache = "—"
+        else:
+            left = CACHE_TTL - s["idle"]
+            cache = f"{left:.0f}m" if left > 0 else "expired"
+        ctx = f"{s['ctx']//1000}k" if s["ctx"] else "compact"
+        model = s["model"].replace("claude-", "")
+        print(f"{s['name'][:28]:28} {s['status']:7} {idle:>8} {cache:>7} {ctx:>9}  {model} / {s['label'] or 'no tmux'}")
+
+
+def cmd_compact_idle(dry):
+    n = 0
+    for s in sessions():
+        if s["idle"] is None or not (COMPACT_FROM <= s["idle"] < COMPACT_TO):
+            continue
+        if s["ctx"] < MIN_CTX:
+            continue
+        n += do_compact(s, dry)
+    return n
+
+
+def boundary_after(sid, since):
+    """Is there a compact_boundary in the transcript newer than since (unix time)."""
+    paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
+    if not paths:
+        return False
+    with open(paths[0], "rb") as f:
+        f.seek(max(0, os.path.getsize(paths[0]) - TAIL_BYTES))
+        for line in reversed(f.read().decode("utf-8", "replace").splitlines()):
+            if '"compact_boundary"' in line:
+                try:
+                    ts = json.loads(line)["timestamp"].replace("Z", "+00:00")
+                    return datetime.fromisoformat(ts).timestamp() > since
+                except Exception:
+                    return False
+    return False
+
+
+def cmd_compact(name, wait):
+    for s in sessions():
+        if s["name"] == name:
+            since = time.time() - 1
+            # "Not enough messages" never reaches the transcript - count it on screen
+            def nothing_to_do():
+                if not s["target"]:
+                    return 0
+                return tmux("capture-pane", "-p", "-S", "-200", "-t", s["target"]).count(
+                    "Not enough messages to compact")
+            before = nothing_to_do()
+            if not do_compact(s, False):
+                return False
+            if not wait:
+                return True
+            # Done = a new compact_boundary in the transcript. The screen is no
+            # proof: an old "Compacted" line from a previous run may still be
+            # visible there (that once got a session restarted mid-compaction).
+            for _ in range(120):
+                if boundary_after(s["sid"], since):
+                    log(f"done  {name}: compacted")
+                    return True
+                if nothing_to_do() > before:
+                    log(f"done  {name}: nothing to compact (Not enough messages)")
+                    return True
+                time.sleep(5)
+            log(f"FAIL  {name}: compaction did not finish in 10 min")
+            return False
+    print(f"no live session '{name}'")
+    return False
+
+
+def project(name):
+    if os.path.exists(CONF):
+        for line in open(CONF):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if parts[0] == name and len(parts) >= 4:
+                return parts
+    sys.exit(f"no project '{name}' in {CONF}")
+
+
+def cmd_updown(which, name, roles):
+    _, d, up, down = project(name)
+    cmd = up if which == "up" else down
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
+    sys.exit(subprocess.run(["bash", "-c", f'{cmd} "$@"', "_", *roles], cwd=os.path.expanduser(d), env=env).returncode)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__); return 0
+    c = argv[0]
+    if c == "status":
+        cmd_status()
+    elif c == "compact-idle":
+        cmd_compact_idle("--dry-run" in argv)
+    elif c == "compact" and len(argv) >= 2:
+        return 0 if cmd_compact(argv[1], "--wait" in argv) else 1
+    elif c in ("up", "down") and len(argv) >= 2:
+        cmd_updown(c, argv[1], argv[2:])
+    else:
+        print(__doc__); return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,133 @@
+# claude-cache-keeper
+
+Keeps long-lived [Claude Code](https://claude.com/claude-code) sessions cheap to wake up.
+
+[Русская версия](README.ru.md)
+
+## The problem
+
+If you keep several Claude Code sessions open for days (an agent team in tmux,
+a few project tabs), most of the bill is not the work itself — it is the
+**wake-ups**.
+
+- The prompt cache lives **1 hour** after the last request to the model.
+- While it is alive, the context is read from the cache at a fraction of the price.
+- After an hour of idling the cache is gone. The next message — yours, another
+  agent's, a scheduled ping — writes the **whole context** into the cache again
+  at full price. A 400k-token session pays for 400k tokens just to say "ok".
+- Pinging a session to "keep the cache warm" only buys another hour and costs
+  money every time. An idle open session costs nothing.
+
+The fix: `/compact` a large idle session a few minutes **before** the cache
+expires. Compaction still reads the context from the cache (cheap) and leaves a
+short summary, so the next wake-up is small.
+
+## What is inside
+
+| part | what it does | needs |
+|---|---|---|
+| `plugin/` — **cache-keeper mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. | Claude Code with mods (tested on 2.1.296) |
+| `bin/agents` | `agents status` — every live session on the machine: status, idle, cache left, context, model, tmux window. `agents compact-idle` — fallback compaction for sessions started without the mod. | Python 3, tmux for compaction |
+| `systemd/` | Runs `agents compact-idle` every 2 min (window 53–59 min). | systemd user session |
+| `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
+
+The layers overlap on purpose: the mod fires first; the timer catches sessions
+that were started before the mod was installed; the status line lets a human
+see it.
+
+## Install
+
+```bash
+git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keeper
+~/src/claude-cache-keeper/install.sh
+```
+
+The installer links `agents` and `cache-segment.sh` into `~/.local/bin` and
+enables the systemd timer. It does **not** touch `settings.json`; add this
+yourself:
+
+```jsonc
+// ~/.claude/settings.json
+{
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/src/claude-cache-keeper/plugin" },
+  "statusLine": {
+    "type": "command",
+    "command": "/home/you/src/claude-cache-keeper/statusline/example-statusline.sh",
+    "refreshInterval": 30
+  }
+}
+```
+
+Or try the mod in one session: `claude --plugin-dir ~/src/claude-cache-keeper/plugin`.
+
+> **Running sessions do not pick the mod up**, not even with `/reload-plugins`:
+> the plugin dir list is read at process start. Restart them (after `/compact`!)
+> or rely on the systemd fallback.
+
+## Usage
+
+```text
+$ agents status
+session                      status      idle   cache   context  model / window
+Coordinator                  idle         34m     26m   compact  sonnet-5-5 / team:Coordinator
+Reviewer                     idle        114m expired      191k  opus-5-5 / team:Reviewer
+webapp-dev                   busy          0m     60m       77k  opus-5-5 / no tmux
+```
+
+- `context` = `compact` means nothing has been added since the last compaction.
+- `agents compact <name> --wait` — compact one session now and wait until the
+  transcript gets a new `compact_boundary`.
+- `agents up|down <project> [roles…]` — start/stop a team using the commands in
+  `~/.config/agents/projects.conf` (see `examples/`).
+- Inside a session: `/cache` →
+  `cache left ~40 min; context 120k; will compact after 30 more min idle`.
+- Log: `~/.local/state/agents/compact-idle.log`.
+
+### Tuning
+
+| variable | default | where |
+|---|---|---|
+| `CACHE_KEEPER_AT_MIN` | 50 | mod: compact after N idle minutes |
+| `CACHE_KEEPER_MIN_TOKENS` | 60000 | mod: skip smaller contexts |
+| `CACHE_KEEPER_CACHE_MIN` | 60 | mod: cache TTL |
+| `CACHE_KEEPER_TICK_MS` | 60000 | mod: check interval |
+| `COMPACT_FROM` / `COMPACT_TO` | 53 / 59 | `agents compact-idle` window |
+| `MIN_CTX` | 60000 | `agents compact-idle` threshold |
+| `CACHE_TTL_MIN` | 60 | status line |
+
+If you are on the 5-minute cache TTL (e.g. usage overage), these defaults do
+not help — the cache is gone long before minute 50.
+
+## Safety
+
+- The mod uses `$.session.compact()`, which refuses while a turn is running;
+  the next tick retries. A half-typed draft in the input box is preserved.
+- `agents compact-idle` types `/compact` into a tmux pane only if the session
+  status is `idle` **and** the input box is empty (detected on screen after the
+  `❯` prompt). Sessions outside tmux are never touched.
+- Subagent turns do not reset the idle clock — they have their own cache.
+
+## Lessons learned
+
+- Do not decide that `/compact` has finished by looking at the screen: an old
+  `Compacted` line may still be visible. `agents compact --wait` checks the
+  transcript for a new `compact_boundary`.
+- The timer interval must be well below the compaction window. With a 5-minute
+  timer (which really fires every ~5.5 min) and a 4-minute window, a 191k
+  session slipped through.
+- Before restarting a session with `--resume`, compact it first — otherwise the
+  whole uncompacted tail is written to the cache again.
+- The last `usage` in a transcript overstates the context if a compaction came
+  after it.
+
+## Tests
+
+```bash
+claude --plugin-dir plugin   # once, interactively: generates plugin/.claude-plugin/types
+claude plugin validate plugin
+claude plugin test plugin
+```
+
+## License
+
+MIT

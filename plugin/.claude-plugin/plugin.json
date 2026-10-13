@@ -1,0 +1,8 @@
+{
+  "name": "cache-keeper",
+  "version": "0.1.0",
+  "description": "Compacts an idle Claude Code session shortly before its prompt cache expires, and shows how long the cache has left (/cache)",
+  "author": { "name": "Nazman Gena" },
+  "homepage": "https://github.com/nazmang/claude-cache-keeper",
+  "license": "MIT"
+}
