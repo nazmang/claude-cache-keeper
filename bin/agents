@@ -20,7 +20,9 @@
                                 compact one session now (same checks except idle
                                 time); --wait - wait until done (exit 0 = done)
   agents up <project> [name...]   start a project's sessions in tmux
-  agents down <project> [name...] compact and close them
+  agents down <project> [name...] [--no-compact]
+                                compact and close them (--no-compact: just close,
+                                e.g. before a clean restart with up --fresh)
 
 Projects come from two files:
   ~/.config/agents/projects.conf  "project | dir | up command | down command" -
@@ -69,6 +71,11 @@ COMPACT_FROM = int(os.environ.get("COMPACT_FROM", 53))  # the cache-keeper mod c
 COMPACT_TO = int(os.environ.get("COMPACT_TO", 59))
 MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
 TAIL_BYTES = 4 * 1024 * 1024
+
+
+# "shell": the turn is over but a background command (Monitor, a server) runs.
+# The session takes input like an idle one.
+IDLE_STATES = ("idle", "shell")
 
 
 def log(msg):
@@ -202,7 +209,7 @@ def do_compact(s, dry):
     why = None
     if not s["target"]:
         why = "not in tmux"
-    elif s["status"] != "idle":
+    elif s["status"] not in IDLE_STATES:
         why = f"status {s['status']}"
     elif not input_empty(s["target"]):
         why = "input box has a draft"
@@ -503,7 +510,7 @@ def sessions_up(project, rows, fresh=False):
     return 0
 
 
-def sessions_down(project, rows):
+def sessions_down(project, rows, compact=True):
     wanted = {r[4] for r in rows if r[4]}
     rc = 0
     for s in sessions():
@@ -513,7 +520,7 @@ def sessions_down(project, rows):
             print(f"  ! {s['name']}: not in tmux - close it yourself (/compact, then /exit)")
             rc = 1
             continue
-        if s["ctx"] >= MIN_CTX and not compact_wait(s):
+        if compact and s["ctx"] >= MIN_CTX and not compact_wait(s):
             print(f"  ! {s['name']}: not closed, compaction failed or session busy")
             rc = 1
             continue
@@ -530,7 +537,7 @@ def sessions_down(project, rows):
 
 def type_command(s, text):
     """Type a command into an idle session with an empty input box."""
-    if s["status"] != "idle" or not input_empty(s["target"]):
+    if s["status"] not in IDLE_STATES or not input_empty(s["target"]):
         print(f"  ! {s['name']}: busy or input box has a draft - skipped")
         return False
     tmux("send-keys", "-t", s["target"], "-l", text)
@@ -548,11 +555,12 @@ def cmd_updown(which, name, names):
         return subprocess.run(["bash", "-c", f'{cmd} "$@"', "_", *names],
                               cwd=os.path.expanduser(d), env=env).returncode
     fresh = "--fresh" in names
-    names = [n for n in names if n != "--fresh"]
+    compact = "--no-compact" not in names
+    names = [n for n in names if n not in ("--fresh", "--no-compact")]
     rows = session_lines(name, names)
     if not rows:
         sys.exit(f"no project '{name}' in {CONF} or {SESS_CONF}")
-    return sessions_up(name, rows, fresh) if which == "up" else sessions_down(name, rows)
+    return sessions_up(name, rows, fresh) if which == "up" else sessions_down(name, rows, compact)
 
 
 def main(argv):
