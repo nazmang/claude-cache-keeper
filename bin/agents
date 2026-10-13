@@ -530,6 +530,11 @@ def sessions_down(project, rows, compact=True):
         for _ in range(30):
             if not os.path.exists(f"/proc/{s['pid']}"):
                 break
+            # background tasks still running: Claude asks before exiting; the
+            # tasks belong to the session we are closing, so stop them too
+            screen = tmux("capture-pane", "-p", "-t", s["target"])
+            if "Background work is running" in screen and "Exit and stop tasks" in screen:
+                tmux("send-keys", "-t", s["target"], "Enter")
             time.sleep(1)
         print(f"  - {s['name']}: closed (resume id {s['sid']})")
     return rc
