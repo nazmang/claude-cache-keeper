@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -53,4 +53,14 @@ test('message line marks cold wakes', async () => {
   expect(messageLine(undefined)).toBe('')
   expect(messageLine({ ts: 0, from: 'Alina', to: 'Rita', text: 'go', cold: true } as never)).toMatch(/Alina → Rita ❄ woke a cold cache: go/)
   expect(messageLine({ ts: 0, from: 'A', to: 'B', text: 'x', cold: false } as never)).not.toMatch(/❄/)
+})
+
+test('band is one short line; dashboards are hidden', async () => {
+  const ss = [
+    { display: 'Rita', gender: 'f', status: 'busy', cache_min: 50 },
+    { display: 'Gleb', gender: 'm', status: 'idle', cache_min: -3 },
+    { display: 'Panel', gender: 'x', status: 'idle', cache_min: 40 },
+  ] as never[]
+  expect(visible(ss).length).toBe(2)
+  expect(bandLine(visible(ss), 0)).toBe('⏳ 👧Rita · 1 idle (1 💤)')
 })

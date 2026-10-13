@@ -1,11 +1,13 @@
 // agents-panel: who is working on this machine, and what waits on you.
 //
-// A band above the prompt shows every live Claude Code session as a little
-// girl or boy (people.conf), coloured by model, grouped by project; a working
-// session blinks an hourglass, one whose prompt cache has expired is dimmed.
-// The last line counts the open checklist items that wait on the person.
-// /team opens a pane with the details: model, idle time, cache, context, and
-// the waiting items by project.
+// A one-line band above the prompt: who is working right now, how many are
+// asleep (cache gone), the latest message between sessions and how many
+// checklist items wait on the person. /team opens the full pane: every live
+// session as a pixel girl or boy (people.conf) in the model's colour, what
+// each is doing, clickable to jump to its tmux window, the messages and the
+// waiting items. A session started with AGENTS_PANEL_OPEN=1 in its settings
+// env opens /team by itself - a dedicated dashboard window. People marked
+// `x` in people.conf (such a dashboard) are left out.
 //
 // A hooks module has no file system, so the data comes from `agents status
 // --json --max-age N` (bin/agents in this repo), which caches its answer: all
@@ -84,33 +86,28 @@ async function refresh($) {
   try { data = JSON.parse(r.stdout); error = '' } catch { error = 'agents: bad JSON' }
 }
 
-function Person({ s, Text }) {
-  const dim = s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0
-  return (
-    <Text color={modelColor(s.model)} dimColor={dim}>
-      {`${figure(s.gender)}${s.display}${stateGlyph(s, frame)} `}
-    </Text>
-  )
+export function bandLine(sessions, frameNo) {
+  const busy = sessions.filter((s) => s.status === 'busy')
+  const asleep = sessions.filter((s) => s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0).length
+  const who = busy.length
+    ? busy.map((s) => `${figure(s.gender)}${s.display}`).join(' ')
+    : 'nobody'
+  return `${frameNo % 2 ? '⌛' : '⏳'} ${who} · ${sessions.length - busy.length} idle (${asleep} 💤)`
 }
 
 function band(Box, Text, e) {
   if (!data) return <Text dimColor>{error ? `agents-panel: ${error}` : 'agents-panel: loading…'}</Text>
-  const width = e.props?.bodyColumns || 80
-  return (
-    <Box flexDirection="column">
-      {groupByProject(data.sessions).map(([project, list]) => (
-        <Box key={`p-${project}`} flexDirection="row" flexWrap="wrap" width={width}>
-          <Text dimColor>{`${project}: `}</Text>
-          {list.map((s) => <Person key={`s-${s.pid}`} s={s} Text={Text} />)}
-        </Box>
-      ))}
-      {data.messages && data.messages[0]
-        ? <Text dimColor={!data.messages[0].cold} color={data.messages[0].cold ? '#38bdf8' : undefined}
-            wrap="truncate-end">{messageLine(data.messages[0])}</Text>
-        : null}
-      <Text dimColor>{`${waitingLine(data.checklist)} · /team`}</Text>
-    </Box>
-  )
+  const people = visible(data.sessions)
+  const m = data.messages && data.messages[0]
+  const parts = [bandLine(people, frame)]
+  if (m) parts.push(`📨 ${hhmm(m.ts)} ${m.from}→${m.to}${m.cold ? ' ❄' : ''}`)
+  if (data.checklist) parts.push(`waiting on you: ${data.checklist.waiting.length}`)
+  parts.push('/team')
+  return <Text dimColor wrap="truncate-end">{parts.join(' · ')}</Text>
+}
+
+export function visible(sessions) {
+  return (sessions || []).filter((s) => s.gender !== 'x')
 }
 
 function fmtDur(v) {
@@ -233,6 +230,9 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'team', description: 'All live agents on this machine and what waits on you' })
     await refresh($)
+    if ((await $.env.get('AGENTS_PANEL_OPEN')) === '1') {
+      try { await $.ui.open({ id: 'team', title: 'Team' }) } catch {}
+    }
     if (stopTick) stopTick.cancel()
     stopTick = $.clock.every(POLL_MS, async () => {
       frame += 1
@@ -257,6 +257,7 @@ export function register(on) {
   on('ui.render', { component: 'Pane', requestId: 'team' }, ($, e) => {
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
     if (!data) return <Text dimColor>{error || 'loading…'}</Text>
+    const people = visible(data.sessions)
     const cl = data.checklist
     const waiting = cl ? groupByProject(cl.waiting.map((i) => ({ ...i, project: i.project || '?' }))) : []
     let n = 0
@@ -289,8 +290,8 @@ export function register(on) {
     }
     return (
       <Box flexDirection="column">
-        <Text bold>{headline(data.sessions)}</Text>
-        {groupByProject(data.sessions).map(([project, list]) => (
+        <Text bold>{headline(people)}</Text>
+        {groupByProject(people).map(([project, list]) => (
           <Box key={`tp-${project}`} flexDirection="column" marginTop={1}>
             <Text dimColor>{project}</Text>
             <Box flexDirection="row" flexWrap="wrap" columnGap={1}>{list.map(card)}</Box>
