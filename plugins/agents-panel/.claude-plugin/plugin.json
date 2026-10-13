@@ -1,0 +1,8 @@
+{
+  "name": "agents-panel",
+  "version": "0.1.0",
+  "description": "A band above the prompt with every live Claude Code session on the machine (girls and boys coloured by model, busy or idle) and the open checklist items waiting on you; /team opens the full panel",
+  "author": { "name": "Nazman Gena" },
+  "homepage": "https://github.com/nazmang/claude-cache-keeper",
+  "license": "MIT"
+}

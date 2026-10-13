@@ -31,6 +31,7 @@ short summary, so the next wake-up is small.
 | `systemd/` | Runs `agents compact-idle` every 2 min (window 53–59 min). | systemd user session |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
 | `plugins/push-guard/` — **push-guard mod** | Refuses `git push` to a branch whose PR is already merged (the commits would never reach the base branch) and tells the agent to start a fresh branch. Unknown repos and missing `gh` pass through; `PUSH_GUARD=off` overrides. | `gh` logged in |
+| `plugins/agents-panel/` — **agents-panel mod** | A band above the prompt with every live session on the machine — 👧/👦/🧒 per `people.conf`, coloured by model (Haiku blue, Sonnet amber, Opus purple, Fable green), ⏳ while working, 💤 when the cache is gone — and the open checklist items waiting on you. `/team` opens the full panel: model, idle, cache, context, waiting items by project. | `bin/agents` on `PATH` |
 
 The layers overlap on purpose: the mod fires first; the timer catches sessions
 that were started before the mod was installed; the status line lets a human
@@ -97,6 +98,17 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 - Inside a session: `/cache` →
   `cache left ~40 min; context 120k; will compact after 30 more min idle`.
 - Log: `~/.local/state/agents/compact-idle.log`.
+
+### agents-panel data
+
+The mod has no file system, so it asks `agents status --json --max-age 5`; the
+answer is cached, so all sessions together recompute it at most every 5 s.
+
+- `~/.config/agents/people.conf` — `session name | display name | f|m|-` (see `examples/`).
+- Checklist: one JSON per item in `~/.local/state/agents/checklist/items/`
+  (`{id, data: {project, title, who, status}}`) — e.g. a dump of a Claude
+  artifact database. Open items (`status: todo`) whose `who` is in `OWNER_WHO`
+  (default `owner,together,you` and their Russian twins) count as waiting on you.
 
 ### Tuning
 

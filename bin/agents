@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """agents - live Claude Code sessions on this machine, and prompt-cache upkeep.
 
-  agents status                 all live sessions: status, idle time, cache left,
-                                context, model, tmux window
+  agents status [--json [--max-age S]]
+                                all live sessions: status, idle time, cache left,
+                                context, model, tmux window. --json adds people
+                                (people.conf) and the checklist summary; with
+                                --max-age, a cached answer younger than S seconds
+                                is reused (the agents-panel mod polls this)
   agents compact-idle [--dry-run]
                                 compact sessions whose cache is about to expire
                                 (idle 53..59 min; the cache-keeper mod inside a
@@ -34,6 +38,10 @@ up after an hour of idling writes its whole context into the cache again at
 full price. /compact at minute 50-59 still reads the context from the cache
 (cheap) and leaves a small summary, so the next wake-up costs next to nothing.
 
+People: ~/.config/agents/people.conf, "session name | display name | f|m|-".
+Checklist snapshot: ~/.local/state/agents/checklist/items/*.json, one JSON per item
+  ({id, data: {project, title, who, status, ...}}), as written by an artifact
+  database dump; "waiting on you" = open items whose `who` is in OWNER_WHO.
 Log: ~/.local/state/agents/compact-idle.log
 Env: COMPACT_FROM, COMPACT_TO (minutes), MIN_CTX (tokens).
 """
@@ -44,6 +52,10 @@ SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 CONF = os.path.expanduser("~/.config/agents/projects.conf")
 SESS_CONF = os.path.expanduser("~/.config/agents/sessions.conf")
+PEOPLE_CONF = os.path.expanduser("~/.config/agents/people.conf")
+CHECKLIST_DIR = os.path.expanduser("~/.local/state/agents/checklist/items")
+STATUS_CACHE = os.path.expanduser("~/.local/state/agents/status.json")
+OWNER_WHO = set(os.environ.get("OWNER_WHO", "владелец,вместе,ты,owner,together,you").split(","))
 LOG = os.path.expanduser("~/.local/state/agents/compact-idle.log")
 CACHE_TTL = 60
 COMPACT_FROM = int(os.environ.get("COMPACT_FROM", 53))  # the cache-keeper mod compacts at 50; this is the fallback
@@ -201,6 +213,73 @@ def cmd_status():
         ctx = f"{s['ctx']//1000}k" if s["ctx"] else "compact"
         model = s["model"].replace("claude-", "")
         print(f"{s['name'][:28]:28} {s['status']:7} {idle:>8} {cache:>7} {ctx:>9}  {model} / {s['label'] or 'no tmux'}")
+
+
+def people():
+    out = {}
+    for parts in conf_lines(PEOPLE_CONF):
+        parts += ["", ""]
+        out[parts[0]] = {"display": parts[1] or parts[0], "gender": parts[2] or "-"}
+    return out
+
+
+def checklist():
+    files = glob.glob(os.path.join(CHECKLIST_DIR, "*.json"))
+    if not files:
+        return None
+    items = []
+    for f in files:
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        data = d.get("data") or d
+        if data.get("status") not in ("todo", None):
+            continue
+        items.append({"id": d.get("id") or os.path.basename(f)[:-5],
+                      "project": data.get("project", ""), "title": data.get("title", ""),
+                      "who": data.get("who", ""), "section": data.get("section", ""),
+                      "order": data.get("order", 0)})
+    items.sort(key=lambda i: (i["project"], i["order"]))
+    waiting = [i for i in items if i["who"] in OWNER_WHO]
+    return {"snapshot": max(os.path.getmtime(f) for f in files),
+            "open": len(items), "waiting": waiting}
+
+
+def project_of(s):
+    if s["label"]:
+        return s["label"].split(":", 1)[0]
+    return os.path.basename(s["cwd"].rstrip("/")) or "?"
+
+
+def cmd_status_json(max_age):
+    if max_age:
+        try:
+            if time.time() - os.path.getmtime(STATUS_CACHE) < max_age:
+                sys.stdout.write(open(STATUS_CACHE).read())
+                return
+        except OSError:
+            pass
+    ppl = people()
+    now = datetime.now(timezone.utc)
+    rows = []
+    for s in sessions():
+        p = ppl.get(s["name"], {})
+        rows.append({
+            "name": s["name"], "display": p.get("display", s["name"]),
+            "gender": p.get("gender", "-"), "project": project_of(s),
+            "status": s["status"], "model": s["model"].replace("claude-", ""),
+            "idle_min": None if s["idle"] is None else round(s["idle"], 1),
+            "cache_min": None if s["idle"] is None else round(CACHE_TTL - s["idle"], 1),
+            "ctx": s["ctx"], "tmux": s["label"], "pid": s["pid"]})
+    out = json.dumps({"at": now.isoformat(timespec="seconds"), "sessions": rows,
+                      "checklist": checklist()}, ensure_ascii=False)
+    os.makedirs(os.path.dirname(STATUS_CACHE), exist_ok=True)
+    tmp = STATUS_CACHE + f".{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(out)
+    os.replace(tmp, STATUS_CACHE)
+    sys.stdout.write(out)
 
 
 def cmd_compact_idle(dry):
@@ -386,7 +465,10 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__); return 0
     c = argv[0]
-    if c == "status":
+    if c == "status" and "--json" in argv:
+        age = float(argv[argv.index("--max-age") + 1]) if "--max-age" in argv else 0
+        cmd_status_json(age)
+    elif c == "status":
         cmd_status()
     elif c == "compact-idle":
         cmd_compact_idle("--dry-run" in argv)
