@@ -7,9 +7,12 @@
 //
 // On every Bash call that contains `git push`, the mod works out the target
 // branch(es) and asks `gh` whether a merged PR with that head exists. If one
-// does and no open PR uses the same head, the call is denied with a hint to
-// start a fresh branch. Anything it cannot check (no gh, not GitHub, offline)
-// passes through untouched. `PUSH_GUARD=off` anywhere in the command skips it.
+// does and no open PR uses the same head, the person is asked in the engine's
+// own question dialog; only their "yes" lets the push run. No answer, a
+// dismissed dialog or a run with nobody to ask (-p) is a refusal. There is
+// deliberately no override the model could type itself (an env prefix, a
+// flag): the guard exists because an agent in a hurry would use it.
+// Anything it cannot check (no gh, not GitHub, offline) passes through.
 
 const PROTECTED = /^(main|master|develop|dev|staging|production|release([/-].*)?)$/
 
@@ -118,7 +121,7 @@ async function resolveDir($, dir) {
   return `${cwd}/${dir}`
 }
 
-// The verdict for one branch: null = fine, otherwise the deny text.
+// The verdict for one branch: null = fine, otherwise the merged PR.
 async function check($, cwd, branch) {
   if (PROTECTED.test(branch)) return null
   const r = await run($, ['gh', 'pr', 'list', '--head', branch, '--state', 'all',
@@ -130,20 +133,25 @@ async function check($, cwd, branch) {
   const merged = prs.filter((p) => p.state === 'MERGED')
     .sort((a, b) => String(b.mergedAt).localeCompare(String(a.mergedAt)))[0]
   if (!merged) return null
-  const base = merged.baseRefName
-  const when = String(merged.mergedAt).slice(0, 10)
-  return `push-guard: branch '${branch}' was already merged into '${base}' (PR #${merged.number}, ${when}). ` +
-    `Commits pushed there now will not reach '${base}' - nobody will review or merge them. ` +
+  return merged
+}
+
+export const YES = 'Yes, push anyway'
+export const NO = 'No, do not push'
+
+function denyText(branch, pr, why) {
+  const base = pr.baseRefName
+  return `push-guard: branch '${branch}' was already merged into '${base}' (PR #${pr.number}, ` +
+    `${String(pr.mergedAt).slice(0, 10)}); ${why}. Commits pushed there now would not reach '${base}'. ` +
     `Start a fresh branch from the current base instead, e.g.:\n` +
     `  git fetch origin && git switch -c ${branch}-2 origin/${base} && git cherry-pick <your commits>\n` +
-    `then push that branch and open a new PR. If pushing to the merged branch is really intended, ` +
-    `say why to the user and prefix the command with PUSH_GUARD=off.`
+    `then push that branch and open a new PR. Do not retry the push to '${branch}' in another way.`
 }
 
 export function register(on) {
   on('tool.call', async ($, e, next) => {
     if (e.tool !== 'Bash' || typeof e.command !== 'string') return next(e)
-    if (!/\bgit\b[^\n]*\bpush\b/.test(e.command) || /\bPUSH_GUARD=off\b/.test(e.command)) return next(e)
+    if (!/\bgit\b[^\n]*\bpush\b/.test(e.command)) return next(e)
     for (const p of findPushes(e.command)) {
       if (p.skip) continue
       const cwd = await resolveDir($, p.dir)
@@ -155,11 +163,19 @@ export function register(on) {
         if (cur && cur !== 'HEAD') branches.push(cur)
       }
       for (const b of branches) {
-        const deny = await check($, cwd, b)
-        if (deny) {
-          $.ui.log(`push to merged branch '${b}' refused`)
-          return { deny }
+        const pr = await check($, cwd, b)
+        if (!pr) continue
+        let answer = ''
+        try {
+          answer = await $.ui.ask(
+            `push-guard: '${b}' is already merged into '${pr.baseRefName}' (PR #${pr.number}). Push to it anyway?`,
+            { header: 'push-guard', options: [NO, YES] })
+        } catch {
+          answer = ''
         }
+        if (answer === YES) { $.ui.log(`push to merged branch '${b}' allowed by the user`); continue }
+        $.ui.log(`push to merged branch '${b}' refused`)
+        return { deny: denyText(b, pr, answer ? 'the user declined the push' : 'nobody confirmed the push') }
       }
     }
     return next(e)

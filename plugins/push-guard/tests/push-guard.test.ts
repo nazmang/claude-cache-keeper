@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { destBranch, findPushes } from '../hooks/register.js'
+import { destBranch, findPushes, NO, YES } from '../hooks/register.js'
 
 test('finds pushes behind cd, -C and env prefixes', async () => {
   expect(findPushes('cd repo && git push')).toEqual([{ dir: 'repo', remote: 'origin', refs: [], skip: false }])
@@ -19,7 +19,8 @@ test('maps refspecs to destination branches', async () => {
 })
 
 // gh answers per branch; git rev-parse answers the current branch
-function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', ghFails = false) {
+// answer: what the person picks in the dialog; null = dismissed
+function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', ghFails = false, answer: string | null = NO) {
   mock.env(on, { HOME: '/home/u' })
   const ran: string[][] = []
   const logs: string[] = []
@@ -33,18 +34,51 @@ function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', g
     const b = e.argv[e.argv.indexOf('--head') + 1]
     return { value: { exitCode: 0, stdout: JSON.stringify(prsByBranch[b] ?? []), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('tool.call', () => { toolRan += 1; return { result: { stdout: 'ok', stderr: '', interrupted: false } } })
-  return { ran, logs, ran_tool: () => toolRan }
+  const asked: string[] = []
+  on('tool.call', ($, e) => {
+    if (e.tool === 'AskUserQuestion') {
+      const q = e.questions[0].question
+      asked.push(q)
+      if (answer === null) throw new Error('dismissed')
+      return { result: { questions: e.questions, answers: { [q]: answer } } }
+    }
+    toolRan += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  return { ran, logs, asked, ran_tool: () => toolRan }
 }
 
 const merged = [{ number: 71, state: 'MERGED', mergedAt: '2026-10-12T10:00:00Z', baseRefName: 'main' }]
 
-test('refuses a push to a merged branch', async ($, on) => {
+test('asks the person; "no" refuses the push', async ($, on) => {
   const s = setup(on, { 'feat/x': merged })
   const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
-  expect(r.deny).toMatch(/already merged into 'main' \(PR #71, 2026-10-12\)/)
+  expect(s.asked[0]).toMatch(/'feat\/x' is already merged into 'main' \(PR #71\)/)
+  expect(r.deny).toMatch(/already merged into 'main' \(PR #71, 2026-10-12\); the user declined/)
+  expect(r.deny).not.toMatch(/PUSH_GUARD/)
   expect(s.ran_tool()).toBe(0)
   expect(s.logs[0]).toMatch(/refused/)
+})
+
+test('"yes" from the person lets the push run', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, YES)
+  const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(r.deny).toBeUndefined()
+  expect(s.ran_tool()).toBe(1)
+})
+
+test('a dismissed dialog refuses', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, null)
+  const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(r.deny).toMatch(/nobody confirmed/)
+  expect(s.ran_tool()).toBe(0)
+})
+
+test('the model cannot switch the guard off from the command', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged })
+  const r = await $.tool.call({ tool: 'Bash', command: 'PUSH_GUARD=off git push' })
+  expect(r.deny).toMatch(/declined/)
+  expect(s.ran_tool()).toBe(0)
 })
 
 test('lets through when an open PR uses the same head', async ($, on) => {
@@ -54,13 +88,12 @@ test('lets through when an open PR uses the same head', async ($, on) => {
   expect(s.ran_tool()).toBe(1)
 })
 
-test('lets through unmerged branches, main, overrides and unknown repos', async ($, on) => {
+test('lets through unmerged branches, main and other commands', async ($, on) => {
   const s = setup(on, { 'feat/x': merged, 'feat/new': [] })
   expect((await $.tool.call({ tool: 'Bash', command: 'git push origin feat/new' })).deny).toBeUndefined()
   expect((await $.tool.call({ tool: 'Bash', command: 'git push origin main' })).deny).toBeUndefined()
-  expect((await $.tool.call({ tool: 'Bash', command: 'PUSH_GUARD=off git push' })).deny).toBeUndefined()
   expect((await $.tool.call({ tool: 'Bash', command: 'ls -la' })).deny).toBeUndefined()
-  expect(s.ran_tool()).toBe(4)
+  expect(s.ran_tool()).toBe(3)
 })
 
 test('passes when gh cannot answer', async ($, on) => {
