@@ -228,7 +228,7 @@ function fmtMin(v) {
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'team', description: 'All live agents on this machine and what waits on you' })
+    await $.command.register({ name: 'team', description: 'Open or close the panel: every live agent on this machine and what waits on you' })
     await refresh($)
     if ((await $.env.get('AGENTS_PANEL_OPEN')) === '1') {
       try { await $.ui.open({ id: 'team', title: 'Team' }) } catch {}
@@ -242,7 +242,10 @@ export function register(on) {
     return next(e)
   })
 
+  // /team toggles the pane
   on('command.run', { command: 'team' }, async ($) => {
+    const open = (await $.ui.panes()).some((p) => p.id === 'team')
+    if (open) { await $.ui.close({ id: 'team' }); return {} }
     await refresh($)
     const r = await $.ui.open({ id: 'team', title: 'Team' })
     return r.isPlaced ? {} : { text: `team: ${r.reason || 'pane not placed'}` }
