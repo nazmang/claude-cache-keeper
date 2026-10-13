@@ -21,6 +21,7 @@ let error = ''
 let frame = 0
 let stopTick = null
 let agentsBin = 'agents'
+let expanded = ''        // the project opened in the checklist tab
 
 export const MODEL_COLORS = { haiku: '#3b82f6', sonnet: '#f59e0b', opus: '#a855f7', fable: '#22c55e' }
 
@@ -226,12 +227,37 @@ function fmtMin(v) {
   return v >= 600 ? `${Math.round(v / 60)}h` : `${Math.round(v)}m`
 }
 
+// open items of one project: those waiting on the person first
+export function projectItems(cl, name) {
+  const list = ((cl && cl.items) || []).filter((i) => (i.project || '?') === name)
+  const mine = new Set(((cl && cl.waiting) || []).map((i) => i.id))
+  return [...list.filter((i) => mine.has(i.id)), ...list.filter((i) => !mine.has(i.id))]
+    .map((i) => ({ ...i, mine: mine.has(i.id) }))
+}
+
+export function projectLabel(p) {
+  const you = p.waiting ? ` · ${p.waiting} you` : ''
+  return `${p.name}  ${p.todo} open${you}${p.later ? ` · ${p.later} later` : ''}`
+}
+
+async function togglePane($, id, title) {
+  const open = (await $.ui.panes()).some((p) => p.id === id)
+  if (open) { await $.ui.close({ id }); return {} }
+  await refresh($)
+  const r = await $.ui.open({ id, title })
+  return r.isPlaced ? {} : { text: `${id}: ${r.reason || 'pane not placed'}` }
+}
+
 export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'team', description: 'Open or close the panel: every live agent on this machine and what waits on you' })
+    await $.command.register({ name: 'checklist', description: 'Open or close the checklist tab: open items by project, yours first' })
     await refresh($)
     if ((await $.env.get('AGENTS_PANEL_OPEN')) === '1') {
-      try { await $.ui.open({ id: 'team', title: 'Team' }) } catch {}
+      try {
+        await $.ui.open({ id: 'checklist', title: 'Checklist' })
+        await $.ui.open({ id: 'team', title: 'Team' })
+      } catch {}
     }
     if (stopTick) stopTick.cancel()
     stopTick = $.clock.every(POLL_MS, async () => {
@@ -242,13 +268,35 @@ export function register(on) {
     return next(e)
   })
 
-  // /team toggles the pane
-  on('command.run', { command: 'team' }, async ($) => {
-    const open = (await $.ui.panes()).some((p) => p.id === 'team')
-    if (open) { await $.ui.close({ id: 'team' }); return {} }
-    await refresh($)
-    const r = await $.ui.open({ id: 'team', title: 'Team' })
-    return r.isPlaced ? {} : { text: `team: ${r.reason || 'pane not placed'}` }
+  // /team and /checklist toggle their tabs
+  on('command.run', { command: 'team' }, async ($) => togglePane($, 'team', 'Team'))
+  on('command.run', { command: 'checklist' }, async ($) => togglePane($, 'checklist', 'Checklist'))
+
+  on('ui.render', { component: 'Pane', requestId: 'checklist' }, ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const cl = data && data.checklist
+    if (!cl) return <Text dimColor>{error || 'no checklist snapshot yet'}</Text>
+    const open = (name) => () => { expanded = expanded === name ? '' : name; $.ui.invalidate('ui.render') }
+    return (
+      <Box flexDirection="column">
+        <Text bold>{`${cl.open} open · ${cl.waiting.length} waiting on you · snapshot ${hhmm(cl.snapshot)}`}</Text>
+        <Text dimColor>edit on the checklist page or ask an agent; this tab is read-only</Text>
+        {(cl.projects || []).filter((p) => p.todo || p.later).map((p) => (
+          <Box key={`p-${p.name}`} flexDirection="column" marginTop={1}>
+            <Button key={`pb-${p.name}`} label={projectLabel(p)} plain onPress={open(p.name)}>
+              <Text bold={expanded === p.name} color={p.waiting ? '#f59e0b' : undefined}>
+                {`${expanded === p.name ? '▾' : '▸'} ${projectLabel(p)}`}
+              </Text>
+            </Button>
+            {expanded === p.name ? projectItems(cl, p.name).map((i) => (
+              <Text key={`i-${i.id}`} wrap="truncate-end" color={i.mine ? '#f59e0b' : undefined}>
+                {`   ${i.mine ? '★' : '·'} ${i.title}${i.who ? `  (${i.who})` : ''}`}
+              </Text>
+            )) : null}
+          </Box>
+        ))}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {

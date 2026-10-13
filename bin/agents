@@ -267,8 +267,22 @@ def checklist():
                       "order": data.get("order", 0)})
     items.sort(key=lambda i: (i["project"], i["order"]))
     waiting = [i for i in items if i["who"] in OWNER_WHO]
+    projects = {}
+    for f in files:
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        data = d.get("data") or d
+        p = projects.setdefault(data.get("project") or "?", {"todo": 0, "later": 0, "done": 0, "waiting": 0})
+        st = data.get("status") or "todo"
+        p[st] = p.get(st, 0) + 1
+        if st == "todo" and data.get("who") in OWNER_WHO:
+            p["waiting"] += 1
     return {"snapshot": max(os.path.getmtime(f) for f in files),
-            "open": len(items), "waiting": waiting}
+            "open": len(items), "waiting": waiting, "items": items,
+            "projects": [{"name": k, **v} for k, v in
+                         sorted(projects.items(), key=lambda kv: (-kv[1]["waiting"], -kv[1]["todo"], kv[0]))]}
 
 
 def project_of(s):

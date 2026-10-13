@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -63,4 +63,11 @@ test('band is one short line; dashboards are hidden', async () => {
   ] as never[]
   expect(visible(ss).length).toBe(2)
   expect(bandLine(visible(ss), 0)).toBe('⏳ 👧Rita · 1 idle (1 💤)')
+})
+
+test('checklist tab: yours first, label with counts', async () => {
+  const cl = { items: [{ id: 'a', project: 'P', title: 'x' }, { id: 'b', project: 'P', title: 'y' }, { id: 'c', project: 'Q', title: 'z' }],
+    waiting: [{ id: 'b' }] } as never
+  expect(projectItems(cl, 'P').map((i) => `${i.id}${i.mine ? '*' : ''}`)).toEqual(['b*', 'a'])
+  expect(projectLabel({ name: 'P', todo: 2, later: 1, done: 5, waiting: 1 } as never)).toBe('P  2 open · 1 you · 1 later')
 })
