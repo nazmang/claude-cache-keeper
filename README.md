@@ -26,10 +26,11 @@ short summary, so the next wake-up is small.
 
 | part | what it does | needs |
 |---|---|---|
-| `plugin/` — **cache-keeper mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. | Claude Code with mods (tested on 2.1.296) |
+| `plugins/cache-keeper/` — **cache-keeper mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. | Claude Code with mods (tested on 2.1.296) |
 | `bin/agents` | `agents status` — every live session on the machine: status, idle, cache left, context, model, tmux window. `agents compact-idle` — fallback compaction for sessions started without the mod. | Python 3, tmux for compaction |
 | `systemd/` | Runs `agents compact-idle` every 2 min (window 53–59 min). | systemd user session |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
+| `plugins/push-guard/` — **push-guard mod** | Refuses `git push` to a branch whose PR is already merged (the commits would never reach the base branch) and tells the agent to start a fresh branch. Unknown repos and missing `gh` pass through; `PUSH_GUARD=off` overrides. | `gh` logged in |
 
 The layers overlap on purpose: the mod fires first; the timer catches sessions
 that were started before the mod was installed; the status line lets a human
@@ -49,7 +50,8 @@ yourself:
 ```jsonc
 // ~/.claude/settings.json
 {
-  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/src/claude-cache-keeper/plugin" },
+  // several plugins: colon-separated (a comma does not work)
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/src/claude-cache-keeper/plugins/cache-keeper:/home/you/src/claude-cache-keeper/plugins/push-guard" },
   "statusLine": {
     "type": "command",
     "command": "/home/you/src/claude-cache-keeper/statusline/example-statusline.sh",
@@ -58,7 +60,10 @@ yourself:
 }
 ```
 
-Or try the mod in one session: `claude --plugin-dir ~/src/claude-cache-keeper/plugin`.
+Or try a mod in one session: `claude --plugin-dir ~/src/claude-cache-keeper/plugins/cache-keeper`.
+
+> Set the variable in `settings.json`, not in the shell: exported in the
+> environment it was not picked up in our tests (Claude Code 2.1.296).
 
 > **Running sessions do not pick the mod up**, not even with `/reload-plugins`:
 > the plugin dir list is read at process start. Restart them (after `/compact`!)
@@ -133,9 +138,8 @@ not help — the cache is gone long before minute 50.
 ## Tests
 
 ```bash
-claude --plugin-dir plugin   # once, interactively: generates plugin/.claude-plugin/types
-claude plugin validate plugin
-claude plugin test plugin
+claude --plugin-dir plugins/cache-keeper   # once, interactively: generates .claude-plugin/types
+for p in plugins/*; do claude plugin validate $p && claude plugin test $p; done
 ```
 
 ## License

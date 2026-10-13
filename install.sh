@@ -23,7 +23,7 @@ cat <<MSG
 
 Add to ~/.claude/settings.json to load the mod in every new session:
 
-  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$REPO/plugin" },
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$REPO/plugins/cache-keeper:$REPO/plugins/push-guard" },
   "statusLine": { "type": "command", "command": "<your status line script>", "refreshInterval": 30 }
 
 Already running sessions pick the mod up only after a restart.
