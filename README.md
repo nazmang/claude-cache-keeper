@@ -77,8 +77,18 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 - `context` = `compact` means nothing has been added since the last compaction.
 - `agents compact <name> --wait` — compact one session now and wait until the
   transcript gets a new `compact_boundary`.
-- `agents up|down <project> [roles…]` — start/stop a team using the commands in
-  `~/.config/agents/projects.conf` (see `examples/`).
+- `agents up|down <project> [names…]` — start/stop a project's sessions in tmux.
+  - Plain sessions: list them in `~/.config/agents/sessions.conf`
+    (`project | name | dir | model | session id`). `up` opens tmux session
+    `<project>`, one window per line, with `claude -n <name> --resume <id>`; a
+    line without an id starts a new session and records its id. Sessions that
+    are already running — in tmux or in some terminal tab — are left alone.
+    `down` compacts each session first, then sends `/exit`; busy sessions and
+    drafts in the input box are skipped.
+  - Teams with their own start/stop scripts: `~/.config/agents/projects.conf`
+    (`project | dir | up command | down command`).
+  - Moving a session from a terminal tab into tmux: `/compact`, `/exit` in the
+    tab, then `agents up <project>`.
 - Inside a session: `/cache` →
   `cache left ~40 min; context 120k; will compact after 30 more min idle`.
 - Log: `~/.local/state/agents/compact-idle.log`.

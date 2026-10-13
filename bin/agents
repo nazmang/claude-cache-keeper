@@ -12,24 +12,38 @@
   agents compact <name> [--wait]
                                 compact one session now (same checks except idle
                                 time); --wait - wait until done (exit 0 = done)
-  agents up <project> [role...]   start a project's team (command from projects.conf)
-  agents down <project> [role...] stop a project's team
+  agents up <project> [name...]   start a project's sessions in tmux
+  agents down <project> [name...] compact and close them
+
+Projects come from two files:
+  ~/.config/agents/projects.conf  "project | dir | up command | down command" -
+                                  a team with its own start/stop scripts; names
+                                  are passed to them as arguments
+  ~/.config/agents/sessions.conf  "project | name | dir | model | session id" -
+                                  plain sessions, one per line. `up` opens each in
+                                  tmux session <project>, window <name>, with
+                                  `claude -n <name> --resume <id>`. Empty model =
+                                  your default. Empty id = a new session; its id is
+                                  written back, so the next `up` resumes it.
+                                  A session already running (in tmux or not) is
+                                  left alone. `down` closes only idle sessions
+                                  with an empty input box, compacting first.
 
 Why: the prompt cache lives 1 hour from the last request. A session that wakes
 up after an hour of idling writes its whole context into the cache again at
 full price. /compact at minute 50-59 still reads the context from the cache
 (cheap) and leaves a small summary, so the next wake-up costs next to nothing.
 
-Projects: ~/.config/agents/projects.conf, lines "project | dir | up | down".
 Log: ~/.local/state/agents/compact-idle.log
 Env: COMPACT_FROM, COMPACT_TO (minutes), MIN_CTX (tokens).
 """
-import json, os, re, subprocess, sys, time, glob
+import json, os, re, shlex, subprocess, sys, time, glob, uuid
 from datetime import datetime, timezone
 
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 CONF = os.path.expanduser("~/.config/agents/projects.conf")
+SESS_CONF = os.path.expanduser("~/.config/agents/sessions.conf")
 LOG = os.path.expanduser("~/.local/state/agents/compact-idle.log")
 CACHE_TTL = 60
 COMPACT_FROM = int(os.environ.get("COMPACT_FROM", 53))  # the cache-keeper mod compacts at 50; this is the fallback
@@ -217,55 +231,155 @@ def boundary_after(sid, since):
     return False
 
 
+def compact_wait(s):
+    """Compact a session and wait until done. True = compacted or nothing to do."""
+    since = time.time() - 1
+
+    # "Not enough messages" never reaches the transcript - count it on screen
+    def nothing_to_do():
+        if not s["target"]:
+            return 0
+        return tmux("capture-pane", "-p", "-S", "-200", "-t", s["target"]).count(
+            "Not enough messages to compact")
+    before = nothing_to_do()
+    if not do_compact(s, False):
+        return False
+    # Done = a new compact_boundary in the transcript. The screen is no
+    # proof: an old "Compacted" line from a previous run may still be
+    # visible there (that once got a session restarted mid-compaction).
+    for _ in range(120):
+        if boundary_after(s["sid"], since):
+            log(f"done  {s['name']}: compacted")
+            return True
+        if nothing_to_do() > before:
+            log(f"done  {s['name']}: nothing to compact (Not enough messages)")
+            return True
+        time.sleep(5)
+    log(f"FAIL  {s['name']}: compaction did not finish in 10 min")
+    return False
+
+
 def cmd_compact(name, wait):
     for s in sessions():
         if s["name"] == name:
-            since = time.time() - 1
-            # "Not enough messages" never reaches the transcript - count it on screen
-            def nothing_to_do():
-                if not s["target"]:
-                    return 0
-                return tmux("capture-pane", "-p", "-S", "-200", "-t", s["target"]).count(
-                    "Not enough messages to compact")
-            before = nothing_to_do()
-            if not do_compact(s, False):
-                return False
-            if not wait:
-                return True
-            # Done = a new compact_boundary in the transcript. The screen is no
-            # proof: an old "Compacted" line from a previous run may still be
-            # visible there (that once got a session restarted mid-compaction).
-            for _ in range(120):
-                if boundary_after(s["sid"], since):
-                    log(f"done  {name}: compacted")
-                    return True
-                if nothing_to_do() > before:
-                    log(f"done  {name}: nothing to compact (Not enough messages)")
-                    return True
-                time.sleep(5)
-            log(f"FAIL  {name}: compaction did not finish in 10 min")
-            return False
+            return compact_wait(s) if wait else do_compact(s, False)
     print(f"no live session '{name}'")
     return False
 
 
-def project(name):
-    if os.path.exists(CONF):
-        for line in open(CONF):
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split("|")]
-            if parts[0] == name and len(parts) >= 4:
-                return parts
-    sys.exit(f"no project '{name}' in {CONF}")
+def conf_lines(path):
+    if not os.path.exists(path):
+        return []
+    out = []
+    for line in open(path):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append([p.strip() for p in line.split("|")])
+    return out
 
 
-def cmd_updown(which, name, roles):
-    _, d, up, down = project(name)
-    cmd = up if which == "up" else down
-    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
-    sys.exit(subprocess.run(["bash", "-c", f'{cmd} "$@"', "_", *roles], cwd=os.path.expanduser(d), env=env).returncode)
+def team_project(name):
+    for parts in conf_lines(CONF):
+        if parts[0] == name and len(parts) >= 4:
+            return parts
+    return None
+
+
+def session_lines(name, names):
+    rows = [p + [""] * (5 - len(p)) for p in conf_lines(SESS_CONF) if p[0] == name]
+    if names:
+        rows = [r for r in rows if r[1] in names]
+    return rows
+
+
+def save_session_id(project, name, sid):
+    lines = open(SESS_CONF).read().splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        parts = [p.strip() for p in line.split("#", 1)[0].split("|")]
+        if len(parts) >= 2 and parts[0] == project and parts[1] == name:
+            parts += [""] * (5 - len(parts))
+            parts[4] = sid
+            lines[i] = " | ".join(parts) + "\n"
+    with open(SESS_CONF, "w") as f:
+        f.writelines(lines)
+
+
+def sessions_up(project, rows):
+    live = {s["sid"]: s for s in sessions()}
+    for _, name, d, model, sid in rows:
+        if sid and sid in live:
+            s = live[sid]
+            print(f"  = {name}: already running (pid {s['pid']}, {s['label'] or 'no tmux'})")
+            continue
+        args = ["claude", "-n", name]
+        if model and model != "-":
+            args += ["--model", model]
+        if sid:
+            args += ["--resume", sid]
+        else:
+            sid = str(uuid.uuid4())
+            args += ["--session-id", sid]
+            save_session_id(project, name, sid)
+        # A tmux server keeps the environment it was started with; drop
+        # CLAUDE* so the new session does not think it runs inside another one.
+        cmd = "for v in ${!CLAUDE@}; do unset $v; done; exec " + " ".join(shlex.quote(a) for a in args)
+        d = os.path.expanduser(d)
+        if subprocess.run(["tmux", "has-session", "-t", f"={project}"], capture_output=True).returncode:
+            tmux("new-session", "-d", "-s", project, "-n", name, "-c", d, "bash", "-c", cmd)
+        else:
+            tmux("new-window", "-d", "-t", f"={project}:", "-n", name, "-c", d, "bash", "-c", cmd)
+        print(f"  + {name}: started in tmux {project}:{name} ({'resume ' + sid if '--resume' in args else 'new ' + sid})")
+    return 0
+
+
+def sessions_down(project, rows):
+    wanted = {r[4] for r in rows if r[4]}
+    rc = 0
+    for s in sessions():
+        if s["sid"] not in wanted:
+            continue
+        if not s["target"]:
+            print(f"  ! {s['name']}: not in tmux - close it yourself (/compact, then /exit)")
+            rc = 1
+            continue
+        if s["ctx"] >= MIN_CTX and not compact_wait(s):
+            print(f"  ! {s['name']}: not closed, compaction failed or session busy")
+            rc = 1
+            continue
+        if not type_command(s, "/exit"):
+            rc = 1
+            continue
+        for _ in range(30):
+            if not os.path.exists(f"/proc/{s['pid']}"):
+                break
+            time.sleep(1)
+        print(f"  - {s['name']}: closed (resume id {s['sid']})")
+    return rc
+
+
+def type_command(s, text):
+    """Type a command into an idle session with an empty input box."""
+    if s["status"] != "idle" or not input_empty(s["target"]):
+        print(f"  ! {s['name']}: busy or input box has a draft - skipped")
+        return False
+    tmux("send-keys", "-t", s["target"], "-l", text)
+    time.sleep(0.5)
+    tmux("send-keys", "-t", s["target"], "Enter")
+    return True
+
+
+def cmd_updown(which, name, names):
+    team = team_project(name)
+    if team:
+        _, d, up, down = team[:4]
+        cmd = up if which == "up" else down
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
+        return subprocess.run(["bash", "-c", f'{cmd} "$@"', "_", *names],
+                              cwd=os.path.expanduser(d), env=env).returncode
+    rows = session_lines(name, names)
+    if not rows:
+        sys.exit(f"no project '{name}' in {CONF} or {SESS_CONF}")
+    return sessions_up(name, rows) if which == "up" else sessions_down(name, rows)
 
 
 def main(argv):
@@ -279,7 +393,7 @@ def main(argv):
     elif c == "compact" and len(argv) >= 2:
         return 0 if cmd_compact(argv[1], "--wait" in argv) else 1
     elif c in ("up", "down") and len(argv) >= 2:
-        cmd_updown(c, argv[1], argv[2:])
+        return cmd_updown(c, argv[1], argv[2:])
     else:
         print(__doc__); return 1
     return 0

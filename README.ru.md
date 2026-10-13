@@ -55,7 +55,14 @@ git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keep
 
 - `agents status` — таблица сессий; `context` = `compact` — после сжатия ничего не добавилось.
 - `agents compact <имя> --wait` — сжать сейчас и дождаться нового `compact_boundary` в транскрипте.
-- `agents up|down <проект> [роли…]` — команда проекта по `~/.config/agents/projects.conf`.
+- `agents up|down <проект> [имена…]` — поднять/закрыть сессии проекта в tmux.
+  Простые сессии — в `~/.config/agents/sessions.conf`
+  (`проект | имя | каталог | модель | id сессии`): окно на строку,
+  `claude -n <имя> --resume <id>`; без id — новая сессия, id допишется сам.
+  Уже запущенные (в tmux или во вкладке терминала) не трогает. `down` сначала
+  сжимает, потом `/exit`; занятые и с черновиком в поле ввода пропускает.
+  Команды со своими скриптами — в `~/.config/agents/projects.conf`.
+  Перенос вкладки в tmux: во вкладке `/compact`, `/exit`, затем `agents up <проект>`.
 - `/cache` внутри сессии.
 - Лог: `~/.local/state/agents/compact-idle.log`.
 
