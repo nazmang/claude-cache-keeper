@@ -44,15 +44,15 @@ git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keep
 ~/src/claude-cache-keeper/install.sh
 ```
 
-The installer links `agents` and `cache-segment.sh` into `~/.local/bin` and
-enables the systemd timer. It does **not** touch `settings.json`; add this
+The installer cuts a release (`release.sh`), links `agents` and
+`cache-segment.sh` from it into `~/.local/bin` and enables the systemd timer. It does **not** touch `settings.json`; add this
 yourself:
 
 ```jsonc
 // ~/.claude/settings.json
 {
   // several plugins: colon-separated (a comma does not work)
-  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/src/claude-cache-keeper/plugins/cache-keeper:/home/you/src/claude-cache-keeper/plugins/push-guard" },
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/.local/share/claude-cache-keeper/current/plugins/cache-keeper:/home/you/.local/share/claude-cache-keeper/current/plugins/push-guard:/home/you/.local/share/claude-cache-keeper/current/plugins/agents-panel" },
   "statusLine": {
     "type": "command",
     "command": "/home/you/src/claude-cache-keeper/statusline/example-statusline.sh",
@@ -98,6 +98,21 @@ webapp-dev                   busy          0m     60m       77k  opus-5-5 / no t
 - Inside a session: `/cache` →
   `cache left ~40 min; context 120k; will compact after 30 more min idle`.
 - Log: `~/.local/state/agents/compact-idle.log`.
+
+### Releases: never load mods from the tree you edit
+
+Running sessions **hot-reload** a mod whenever its files change. If settings
+point at your working tree, every half-finished save lands in every agent at
+once (we learned this the hard way). So:
+
+- `./release.sh` refuses uncommitted changes, runs `claude plugin validate` and
+  `claude plugin test` for every plugin, copies the committed `bin/`,
+  `plugins/` and `statusline/` to `~/.local/share/claude-cache-keeper/releases/<sha>`
+  and switches `current` atomically. `--list`, `--rollback <sha>`.
+- Settings, `~/.local/bin/agents` and the timer point at
+  `~/.local/share/claude-cache-keeper/current/...`, never at the repo.
+- Develop in a separate worktree (`git worktree add ../claude-cache-keeper-dev -b dev`),
+  merge into `main`, then release.
 
 ### agents-panel data
 

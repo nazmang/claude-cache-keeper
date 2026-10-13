@@ -5,9 +5,11 @@ REPO=$(cd "$(dirname "$0")" && pwd)
 BIN=${BIN:-$HOME/.local/bin}
 UNITS=$HOME/.config/systemd/user
 
+CUR=${DEST:-$HOME/.local/share/claude-cache-keeper}/current
+"$REPO/release.sh"
 mkdir -p "$BIN" "$UNITS"
-ln -sfn "$REPO/bin/agents" "$BIN/agents"
-ln -sfn "$REPO/statusline/cache-segment.sh" "$BIN/cache-segment.sh"
+ln -sfn "$CUR/bin/agents" "$BIN/agents"
+ln -sfn "$CUR/statusline/cache-segment.sh" "$BIN/cache-segment.sh"
 echo "linked: $BIN/agents, $BIN/cache-segment.sh"
 
 if command -v systemctl >/dev/null && command -v tmux >/dev/null; then
@@ -23,7 +25,7 @@ cat <<MSG
 
 Add to ~/.claude/settings.json to load the mod in every new session:
 
-  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$REPO/plugins/cache-keeper:$REPO/plugins/push-guard:$REPO/plugins/agents-panel" },
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$CUR/plugins/cache-keeper:$CUR/plugins/push-guard:$CUR/plugins/agents-panel" },
   "statusLine": { "type": "command", "command": "<your status line script>", "refreshInterval": 30 }
 
 Already running sessions pick the mod up only after a restart.
