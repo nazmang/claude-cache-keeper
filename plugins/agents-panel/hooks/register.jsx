@@ -59,6 +59,11 @@ export function hhmm(ts) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+export function messageLine(m) {
+  if (!m) return ''
+  return `📨 ${hhmm(m.ts)} ${m.from} → ${m.to}${m.cold ? ' ❄ woke a cold cache' : ''}: ${m.text}`
+}
+
 export function waitingLine(cl) {
   if (!cl) return 'checklist: no snapshot yet'
   return `waiting on you: ${cl.waiting.length} · open: ${cl.open} · snapshot ${hhmm(cl.snapshot)}`
@@ -99,6 +104,10 @@ function band(Box, Text, e) {
           {list.map((s) => <Person key={`s-${s.pid}`} s={s} Text={Text} />)}
         </Box>
       ))}
+      {data.messages && data.messages[0]
+        ? <Text dimColor={!data.messages[0].cold} color={data.messages[0].cold ? '#38bdf8' : undefined}
+            wrap="truncate-end">{messageLine(data.messages[0])}</Text>
+        : null}
       <Text dimColor>{`${waitingLine(data.checklist)} · /team`}</Text>
     </Box>
   )
@@ -287,6 +296,16 @@ export function register(on) {
             <Box flexDirection="row" flexWrap="wrap" columnGap={1}>{list.map(card)}</Box>
           </Box>
         ))}
+        {data.messages && data.messages.length ? (
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>{`Messages, last 6 h (${data.messages.filter((m) => m.cold).length} woke a cold cache)`}</Text>
+            {data.messages.slice(0, 8).map((m, i) => (
+              <Text key={`m-${i}`} wrap="truncate-end" color={m.cold ? '#38bdf8' : undefined}>
+                {`${hhmm(m.ts)} ${m.cold ? '❄' : ' '} ${m.from} → ${m.to}: ${m.text}`}
+              </Text>
+            ))}
+          </Box>
+        ) : null}
         <Box marginTop={1} flexDirection="column">
           <Text bold>{waitingLine(cl)}</Text>
           {waiting.map(([project, items]) => (

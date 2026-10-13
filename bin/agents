@@ -7,6 +7,9 @@
                                 (people.conf) and the checklist summary; with
                                 --max-age, a cached answer younger than S seconds
                                 is reused (the agents-panel mod polls this)
+  agents messages [--hours H]   messages between sessions (SendMessage) in the last
+                                H hours (6 by default); ❄ marks a message that woke a
+                                recipient whose prompt cache had already expired
   agents compact-idle [--dry-run]
                                 compact sessions whose cache is about to expire
                                 (idle 53..59 min; the cache-keeper mod inside a
@@ -263,6 +266,68 @@ def project_of(s):
     return os.path.basename(s["cwd"].rstrip("/")) or "?"
 
 
+def transcript_tail(sid):
+    paths = glob.glob(os.path.join(PROJECTS_DIR, "*", f"{sid}.jsonl"))
+    if not paths:
+        return []
+    with open(paths[0], "rb") as f:
+        f.seek(max(0, os.path.getsize(paths[0]) - TAIL_BYTES))
+        return f.read().decode("utf-8", "replace").splitlines()
+
+
+def ts_of(d):
+    return datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00"))
+
+
+def messages(hours=6, live=None):
+    """SendMessage calls of live sessions: newest first, with cold-wake marks."""
+    live = live if live is not None else sessions()
+    by_pid = {s["pid"]: s for s in live}
+    by_name = {s["name"]: s for s in live}
+    since = datetime.now(timezone.utc).timestamp() - hours * 3600
+    replies = {}      # sid -> sorted timestamps of the session's own replies
+    out = []
+    for s in live:
+        own = []
+        for line in transcript_tail(s["sid"]):
+            if '"type":"assistant"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("isSidechain"):
+                continue
+            t = ts_of(d).timestamp()
+            own.append(t)
+            if t < since or '"SendMessage"' not in line:
+                continue
+            for c in (d.get("message") or {}).get("content") or []:
+                if not (isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "SendMessage"):
+                    continue
+                inp = c.get("input") or {}
+                to = str(inp.get("to", ""))
+                m = re.search(r"/(\d+)\.sock$", to)
+                target = by_pid.get(int(m.group(1))) if m else by_name.get(to)
+                text = inp.get("summary") or str(inp.get("message", "")).split("\n")[0]
+                to_name = target["name"] if target else ("(closed session)" if m else to)
+                out.append({"ts": t, "from": s["name"], "to": to_name,
+                            "to_sid": target["sid"] if target else None, "text": text[:160]})
+        replies[s["sid"]] = sorted(own)
+    for m in out:
+        own = replies.get(m.pop("to_sid"), [])
+        before = [t for t in own if t <= m["ts"]]
+        m["cold"] = bool(before) and (m["ts"] - before[-1]) / 60 > CACHE_TTL
+    out.sort(key=lambda m: m["ts"], reverse=True)
+    return out
+
+
+def cmd_messages(hours):
+    for m in messages(hours):
+        when = datetime.fromtimestamp(m["ts"]).strftime("%H:%M")
+        print(f"{when} {'❄' if m['cold'] else ' '} {m['from'][:22]:22} → {m['to'][:22]:22} {m['text'][:90]}")
+
+
 def cmd_status_json(max_age):
     if max_age:
         try:
@@ -274,7 +339,8 @@ def cmd_status_json(max_age):
     ppl = people()
     now = datetime.now(timezone.utc)
     rows = []
-    for s in sessions():
+    live = sessions()
+    for s in live:
         p = ppl.get(s["name"], {})
         rows.append({
             "name": s["name"], "display": p.get("display", s["name"]),
@@ -284,8 +350,11 @@ def cmd_status_json(max_age):
             "cache_min": None if s["idle"] is None else round(CACHE_TTL - s["idle"], 1),
             "ctx": s["ctx"], "tmux": s["label"], "target": s["target"], "pid": s["pid"],
             "tool": s["tool"]})
+    ppl_display = {k: v["display"] for k, v in ppl.items()}
+    msgs = [{**m, "from": ppl_display.get(m["from"], m["from"]), "to": ppl_display.get(m["to"], m["to"])}
+            for m in messages(6, live)[:12]]
     out = json.dumps({"at": now.isoformat(timespec="seconds"), "sessions": rows,
-                      "checklist": checklist()}, ensure_ascii=False)
+                      "checklist": checklist(), "messages": msgs}, ensure_ascii=False)
     os.makedirs(os.path.dirname(STATUS_CACHE), exist_ok=True)
     tmp = STATUS_CACHE + f".{os.getpid()}"
     with open(tmp, "w") as f:
@@ -482,6 +551,8 @@ def main(argv):
         cmd_status_json(age)
     elif c == "status":
         cmd_status()
+    elif c == "messages":
+        cmd_messages(float(argv[argv.index("--hours") + 1]) if "--hours" in argv else 6)
     elif c == "compact-idle":
         cmd_compact_idle("--dry-run" in argv)
     elif c == "compact" and len(argv) >= 2:

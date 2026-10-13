@@ -8,8 +8,10 @@
 // On every Bash call that contains `git push`, the mod works out the target
 // branch(es) and asks `gh` whether a merged PR with that head exists. If one
 // does and no open PR uses the same head, the person is asked in the engine's
-// own question dialog; only their "yes" lets the push run. No answer, a
-// dismissed dialog or a run with nobody to ask (-p) is a refusal. There is
+// own question dialog (and gets a desktop notification); only their "yes"
+// lets the push run. No answer within PUSH_GUARD_ASK_MIN minutes (10), a
+// dismissed dialog or a run with nobody to ask (-p) is a refusal: an agent
+// working unattended in tmux must not hang on the question all night. There is
 // deliberately no override the model could type itself (an env prefix, a
 // flag): the guard exists because an agent in a hurry would use it.
 // Anything it cannot check (no gh, not GitHub, offline) passes through.
@@ -136,6 +138,7 @@ async function check($, cwd, branch) {
   return merged
 }
 
+export const ASK_MIN_DEFAULT = 10
 export const YES = 'Yes, push anyway'
 export const NO = 'No, do not push'
 
@@ -165,13 +168,25 @@ export function register(on) {
       for (const b of branches) {
         const pr = await check($, cwd, b)
         if (!pr) continue
+        const raw = await $.env.get('PUSH_GUARD_ASK_MIN')
+        const askMin = raw && !isNaN(Number(raw)) ? Number(raw) : ASK_MIN_DEFAULT
+        const question = `push-guard: '${b}' is already merged into '${pr.baseRefName}' (PR #${pr.number}). Push to it anyway?`
+        try { await $.ui.notify(question, { title: 'An agent is waiting for you' }) } catch {}
         let answer = ''
         try {
-          answer = await $.ui.ask(
-            `push-guard: '${b}' is already merged into '${pr.baseRefName}' (PR #${pr.number}). Push to it anyway?`,
-            { header: 'push-guard', options: [NO, YES] })
+          answer = await Promise.race([
+            $.ui.ask(question, { header: 'push-guard', options: [NO, YES] }),
+            // a clock that cannot sleep must not decide the race
+            $.clock.sleep(askMin * 60000).then(() => 'timeout', () => new Promise(() => {})),
+          ])
         } catch {
           answer = ''
+        }
+        if (answer === 'timeout') {
+          // the question cannot be closed from a mod: say it is stale
+          $.ui.log(`push to merged branch '${b}' refused: no answer in ${askMin} min; ` +
+            `the question left on screen no longer does anything (Esc closes it)`)
+          return { deny: denyText(b, pr, `nobody answered within ${askMin} min`) }
         }
         if (answer === YES) { $.ui.log(`push to merged branch '${b}' allowed by the user`); continue }
         $.ui.log(`push to merged branch '${b}' refused`)

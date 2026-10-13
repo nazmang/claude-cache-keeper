@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -47,4 +47,10 @@ test('activity icons and headline', async () => {
   expect(activityIcon({ status: 'idle', cache_min: -3 })).toBe('💤')
   expect(headline([{ status: 'busy' }, { status: 'idle', cache_min: 20 }, { status: 'idle', cache_min: -1 }] as never[]))
     .toBe('1 working · 1 waiting · 1 asleep')
+})
+
+test('message line marks cold wakes', async () => {
+  expect(messageLine(undefined)).toBe('')
+  expect(messageLine({ ts: 0, from: 'Alina', to: 'Rita', text: 'go', cold: true } as never)).toMatch(/Alina → Rita ❄ woke a cold cache: go/)
+  expect(messageLine({ ts: 0, from: 'A', to: 'B', text: 'x', cold: false } as never)).not.toMatch(/❄/)
 })

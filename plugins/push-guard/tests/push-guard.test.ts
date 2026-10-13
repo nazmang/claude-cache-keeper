@@ -21,7 +21,8 @@ test('maps refspecs to destination branches', async () => {
 // gh answers per branch; git rev-parse answers the current branch
 // answer: what the person picks in the dialog; null = dismissed
 function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', ghFails = false, answer: string | null = NO) {
-  mock.env(on, { HOME: '/home/u' })
+  mock.env(on, { HOME: '/home/u', PUSH_GUARD_ASK_MIN: '1' })
+  on('ui.notify', () => ({ value: { isShown: true } }))
   const ran: string[][] = []
   const logs: string[] = []
   let toolRan = 0
@@ -40,6 +41,7 @@ function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', g
       const q = e.questions[0].question
       asked.push(q)
       if (answer === null) throw new Error('dismissed')
+      if (answer === 'HANG') return new Promise(() => {})
       return { result: { questions: e.questions, answers: { [q]: answer } } }
     }
     toolRan += 1
@@ -113,4 +115,14 @@ test('checks the right directory for cd and -C', async ($, on) => {
 test('splits on background & and keeps redirects harmless', async () => {
   expect(findPushes('sleep 1 & git push origin feat/a')[0].refs).toEqual(['feat/a'])
   expect(findPushes('git push origin feat/a 2>&1 | tail -3')[0].refs).toEqual(['feat/a'])
+})
+
+test('no answer in time refuses instead of hanging', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, 'HANG')
+  const p = $.tool.call({ tool: 'Bash', command: 'git push' })
+  await clock.advance(61_000)
+  const r = await p
+  expect(r.deny).toMatch(/nobody answered within 1 min/)
+  expect(s.ran_tool()).toBe(0)
 })
