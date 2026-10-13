@@ -73,6 +73,138 @@ MIN_CTX = int(os.environ.get("MIN_CTX", 60000))
 TAIL_BYTES = 4 * 1024 * 1024
 
 
+# --- language ---------------------------------------------------------------
+# AGENTS_LANG (ru|en) wins; otherwise the first non-empty of LC_ALL,
+# LC_MESSAGES, LANG: "ru..." is Russian, anything else English.
+# Only text a person reads is translated: not `status --json`, not what is
+# typed into tmux windows (/compact, /exit), not what is looked for on screen.
+def pick_lang():
+    forced = os.environ.get("AGENTS_LANG", "").strip().lower()
+    if forced in ("ru", "en"):
+        return forced
+    for k in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        v = os.environ.get(k, "").strip()
+        if v:
+            return "ru" if v.lower().startswith("ru") else "en"
+    return "en"
+
+
+LANG = pick_lang()
+
+STRINGS = {
+    "en": {
+        "h_session": "session", "h_status": "status", "h_idle": "idle", "h_cache": "cache",
+        "h_context": "context", "h_model": "model / window", "unit_m": "m",
+        "expired": "expired", "compact": "compact", "no_tmux": "no tmux",
+        "not_in_tmux": "not in tmux", "draft": "input box has a draft",
+        "status_is": "status {status}",
+        "would_compact": "would compact ({k}k, idle {idle:.0f} min)",
+        "sent_compact": "/compact ({k}k, idle {idle:.0f} min, {label})",
+        "done_compacted": "compacted",
+        "done_nothing": "nothing to compact (Not enough messages)",
+        "fail_compact": "compaction did not finish in 10 min",
+        "no_session": "no live session '{name}'",
+        "closed_cold": "closed (resume id {sid})",
+        "running_first": "running - `agents down {project}` first",
+        "already_running": "already running (pid {pid}, {where})",
+        "started": "started in tmux {project}:{name} ({how})",
+        "how_resume": "resume {sid}", "how_new": "new {sid}",
+        "close_yourself": "not in tmux - close it yourself (/compact, then /exit)",
+        "not_closed": "not closed, compaction failed or session busy",
+        "busy_skipped": "busy or input box has a draft - skipped",
+        "no_project": "no project '{name}' in {conf} or {sess}",
+        "st_idle": "idle", "st_busy": "busy", "st_shell": "shell",
+        "closed_session": "(closed session)",
+    },
+    "ru": {
+        "h_session": "сессия", "h_status": "статус", "h_idle": "простой", "h_cache": "кэш",
+        "h_context": "контекст", "h_model": "модель / окно", "unit_m": "м",
+        "expired": "истёк", "compact": "сжато", "no_tmux": "не в tmux",
+        "not_in_tmux": "не в tmux", "draft": "в поле ввода черновик",
+        "status_is": "статус {status}",
+        "would_compact": "сжал бы ({k}k, простой {idle:.0f} мин)",
+        "sent_compact": "/compact ({k}k, простой {idle:.0f} мин, {label})",
+        "done_compacted": "сжато",
+        "done_nothing": "сжимать нечего (Not enough messages)",
+        "fail_compact": "сжатие не закончилось за 10 мин",
+        "no_session": "нет живой сессии '{name}'",
+        "closed_cold": "закрыта (id для возобновления {sid})",
+        "running_first": "работает - сначала `agents down {project}`",
+        "already_running": "уже работает (pid {pid}, {where})",
+        "started": "запущена в tmux {project}:{name} ({how})",
+        "how_resume": "возобновление {sid}", "how_new": "новая {sid}",
+        "close_yourself": "не в tmux - закрой руками (/compact, потом /exit)",
+        "not_closed": "не закрыта: сжатие не вышло или сессия занята",
+        "busy_skipped": "занята или в поле ввода черновик - пропущена",
+        "no_project": "нет проекта '{name}' ни в {conf}, ни в {sess}",
+        "st_idle": "ждёт", "st_busy": "занят", "st_shell": "фон",
+        "closed_session": "(закрытая сессия)",
+    },
+}
+
+
+def t(key, **vars):
+    return STRINGS[LANG].get(key, STRINGS["en"].get(key, key)).format(**vars)
+
+
+DOC_RU = """agents - живые сессии Claude Code на этой машине и уход за кэшем промпта.
+
+  agents status [--json [--max-age S]]
+                                все живые сессии: статус, простой, сколько ещё
+                                живёт кэш, контекст, модель, окно tmux. --json
+                                добавляет людей (people.conf) и сводку чек-листа;
+                                с --max-age ответ моложе S секунд берётся из кэша
+                                (мод agents-panel опрашивает именно так)
+  agents messages [--hours H]   сообщения между сессиями (SendMessage) за
+                                последние H часов (по умолчанию 6); ❄ - сообщение
+                                разбудило адресата с уже остывшим кэшем
+  agents compact-idle [--dry-run]
+                                сжать сессии, у которых кэш скоро истечёт
+                                (простой 53..59 мин; мод cache-keeper внутри
+                                сессии срабатывает на 50-й), если они в tmux,
+                                простаивают, поле ввода пустое, а несжатый
+                                контекст больше MIN_CTX токенов
+  agents compact <имя> [--wait]
+                                сжать одну сессию сейчас (те же проверки, кроме
+                                времени простоя); --wait - ждать конца (код 0 = готово)
+  agents up <проект> [имя...]   поднять сессии проекта в tmux
+  agents down <проект> [имя...] [--no-compact]
+                                сжать и закрыть (--no-compact: просто закрыть,
+                                например перед чистым стартом через up --fresh)
+
+Проекты берутся из двух файлов:
+  ~/.config/agents/projects.conf  "проект | каталог | команда up | команда down" -
+                                  команда со своими скриптами запуска и остановки;
+                                  имена передаются им аргументами
+  ~/.config/agents/sessions.conf  "проект | имя | каталог | модель | id сессии [| доп. аргументы]" -
+                                  обычные сессии, по строке на каждую. `up` открывает
+                                  каждую в tmux-сессии <проект>, окно <имя>, через
+                                  `claude -n <имя> --resume <id>`. Пустая модель =
+                                  твоя по умолчанию. Пустой id = новая сессия; её id
+                                  записывается обратно, и следующий `up` её продолжит.
+                                  Уже запущенную сессию (в tmux или нет) не трогаем.
+                                  `down` закрывает только простаивающие сессии с
+                                  пустым полем ввода, сжав их перед этим.
+                                  `up --fresh` игнорирует сохранённый id и
+                                  начинает новую сессию (чистый старт по ночам);
+                                  доп. аргументы уходят в claude как есть (например
+                                  --remote-control Duty "start the shift").
+
+Зачем: кэш промпта живёт час с последнего запроса. Сессия, проснувшаяся после
+часа простоя, снова записывает весь контекст в кэш по полной цене. /compact на
+50-59-й минуте ещё читает контекст из кэша (дёшево) и оставляет короткую
+выжимку, так что следующее пробуждение почти ничего не стоит.
+
+Люди: ~/.config/agents/people.conf, "имя сессии | отображаемое имя | f|m|-".
+Снимок чек-листа: ~/.local/state/agents/checklist/items/*.json, по JSON на пункт
+  ({id, data: {project, title, who, status, ...}}), как пишет выгрузка базы
+  артефакта; "ждёт тебя" = открытые пункты, у которых `who` из OWNER_WHO.
+Лог: ~/.local/state/agents/compact-idle.log
+Окружение: COMPACT_FROM, COMPACT_TO (минуты), MIN_CTX (токены).
+Язык: AGENTS_LANG=ru|en, иначе по LC_ALL / LC_MESSAGES / LANG.
+"""
+
+
 # "shell": the turn is over but a background command (Monitor, a server) runs.
 # The session takes input like an idle one.
 IDLE_STATES = ("idle", "shell")
@@ -208,36 +340,37 @@ def input_empty(target):
 def do_compact(s, dry):
     why = None
     if not s["target"]:
-        why = "not in tmux"
+        why = t("not_in_tmux")
     elif s["status"] not in IDLE_STATES:
-        why = f"status {s['status']}"
+        why = t("status_is", status=s["status"])
     elif not input_empty(s["target"]):
-        why = "input box has a draft"
+        why = t("draft")
     if why:
         log(f"skip  {s['name']}: {why}")
         return False
     if dry:
-        log(f"dry   {s['name']}: would compact ({s['ctx']//1000}k, idle {s['idle']:.0f} min)")
+        log(f"dry   {s['name']}: " + t("would_compact", k=s["ctx"]//1000, idle=s["idle"]))
         return True
     tmux("send-keys", "-t", s["target"], "-l", "/compact")
     time.sleep(0.5)
     tmux("send-keys", "-t", s["target"], "Enter")
-    log(f"sent  {s['name']}: /compact ({s['ctx']//1000}k, idle {s['idle']:.0f} min, {s['label']})")
+    log(f"sent  {s['name']}: " + t("sent_compact", k=s["ctx"]//1000, idle=s["idle"], label=s["label"]))
     return True
 
 
 def cmd_status():
-    print(f"{'session':28} {'status':7} {'idle':>8} {'cache':>7} {'context':>9}  model / window")
+    print(f"{t('h_session'):28} {t('h_status'):7} {t('h_idle'):>8} {t('h_cache'):>7} {t('h_context'):>9}  {t('h_model')}")
     for s in sessions():
-        idle = f"{s['idle']:.0f}m" if s["idle"] is not None else "—"
+        idle = f"{s['idle']:.0f}{t('unit_m')}" if s["idle"] is not None else "—"
         if s["idle"] is None:
             cache = "—"
         else:
             left = CACHE_TTL - s["idle"]
-            cache = f"{left:.0f}m" if left > 0 else "expired"
-        ctx = f"{s['ctx']//1000}k" if s["ctx"] else "compact"
+            cache = f"{left:.0f}{t('unit_m')}" if left > 0 else t("expired")
+        ctx = f"{s['ctx']//1000}k" if s["ctx"] else t("compact")
+        status = STRINGS[LANG].get("st_" + s["status"], s["status"])
         model = s["model"].replace("claude-", "")
-        print(f"{s['name'][:28]:28} {s['status']:7} {idle:>8} {cache:>7} {ctx:>9}  {model} / {s['label'] or 'no tmux'}")
+        print(f"{s['name'][:28]:28} {status:7} {idle:>8} {cache:>7} {ctx:>9}  {model} / {s['label'] or t('no_tmux')}")
 
 
 def people():
@@ -350,7 +483,8 @@ def messages(hours=6, live=None):
 def cmd_messages(hours):
     for m in messages(hours):
         when = datetime.fromtimestamp(m["ts"]).strftime("%H:%M")
-        print(f"{when} {'❄' if m['cold'] else ' '} {m['from'][:22]:22} → {m['to'][:22]:22} {m['text'][:90]}")
+        to = t("closed_session") if m["to"] == "(closed session)" else m["to"]   # the JSON keeps the English marker
+        print(f"{when} {'❄' if m['cold'] else ' '} {m['from'][:22]:22} → {to[:22]:22} {m['text'][:90]}")
 
 
 def cmd_status_json(max_age):
@@ -434,13 +568,13 @@ def compact_wait(s):
     # visible there (that once got a session restarted mid-compaction).
     for _ in range(120):
         if boundary_after(s["sid"], since):
-            log(f"done  {s['name']}: compacted")
+            log(f"done  {s['name']}: " + t("done_compacted"))
             return True
         if nothing_to_do() > before:
-            log(f"done  {s['name']}: nothing to compact (Not enough messages)")
+            log(f"done  {s['name']}: " + t("done_nothing"))
             return True
         time.sleep(5)
-    log(f"FAIL  {s['name']}: compaction did not finish in 10 min")
+    log(f"FAIL  {s['name']}: " + t("fail_compact"))
     return False
 
 
@@ -448,7 +582,7 @@ def cmd_compact(name, wait):
     for s in sessions():
         if s["name"] == name:
             return compact_wait(s) if wait else do_compact(s, False)
-    print(f"no live session '{name}'")
+    print(t("no_session", name=name))
     return False
 
 
@@ -493,13 +627,13 @@ def sessions_up(project, rows, fresh=False):
     live = {s["sid"]: s for s in sessions()}
     for _, name, d, model, sid, extra in rows:
         if fresh and sid in live:
-            print(f"  = {name}: running - `agents down {project}` first")
+            print(f"  = {name}: " + t("running_first", project=project))
             continue
         if fresh:
             sid = ""
         if sid and sid in live:
             s = live[sid]
-            print(f"  = {name}: already running (pid {s['pid']}, {s['label'] or 'no tmux'})")
+            print(f"  = {name}: " + t("already_running", pid=s["pid"], where=s["label"] or t("no_tmux")))
             continue
         args = ["claude", "-n", name]
         if model and model != "-":
@@ -520,7 +654,8 @@ def sessions_up(project, rows, fresh=False):
             tmux("new-session", "-d", "-s", project, "-n", name, "-c", d, "bash", "-c", cmd)
         else:
             tmux("new-window", "-d", "-t", f"={project}:", "-n", name, "-c", d, "bash", "-c", cmd)
-        print(f"  + {name}: started in tmux {project}:{name} ({'resume ' + sid if '--resume' in args else 'new ' + sid})")
+        print(f"  + {name}: " + t("started", project=project, name=name,
+                              how=t("how_resume", sid=sid) if "--resume" in args else t("how_new", sid=sid)))
     return 0
 
 
@@ -531,11 +666,11 @@ def sessions_down(project, rows, compact=True):
         if s["sid"] not in wanted:
             continue
         if not s["target"]:
-            print(f"  ! {s['name']}: not in tmux - close it yourself (/compact, then /exit)")
+            print(f"  ! {s['name']}: " + t("close_yourself"))
             rc = 1
             continue
         if compact and s["ctx"] >= MIN_CTX and not compact_wait(s):
-            print(f"  ! {s['name']}: not closed, compaction failed or session busy")
+            print(f"  ! {s['name']}: " + t("not_closed"))
             rc = 1
             continue
         if not type_command(s, "/exit"):
@@ -550,14 +685,14 @@ def sessions_down(project, rows, compact=True):
             if "Background work is running" in screen and "Exit and stop tasks" in screen:
                 tmux("send-keys", "-t", s["target"], "Enter")
             time.sleep(1)
-        print(f"  - {s['name']}: closed (resume id {s['sid']})")
+        print(f"  - {s['name']}: " + t("closed_cold", sid=s["sid"]))
     return rc
 
 
 def type_command(s, text):
     """Type a command into an idle session with an empty input box."""
     if s["status"] not in IDLE_STATES or not input_empty(s["target"]):
-        print(f"  ! {s['name']}: busy or input box has a draft - skipped")
+        print(f"  ! {s['name']}: " + t("busy_skipped"))
         return False
     tmux("send-keys", "-t", s["target"], "-l", text)
     time.sleep(0.5)
@@ -578,13 +713,13 @@ def cmd_updown(which, name, names):
     names = [n for n in names if n not in ("--fresh", "--no-compact")]
     rows = session_lines(name, names)
     if not rows:
-        sys.exit(f"no project '{name}' in {CONF} or {SESS_CONF}")
+        sys.exit(t("no_project", name=name, conf=CONF, sess=SESS_CONF))
     return sessions_up(name, rows, fresh) if which == "up" else sessions_down(name, rows, compact)
 
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print(__doc__); return 0
+        print(DOC_RU if LANG == "ru" else __doc__); return 0
     c = argv[0]
     if c == "status" and "--json" in argv:
         age = float(argv[argv.index("--max-age") + 1]) if "--max-age" in argv else 0
@@ -600,7 +735,7 @@ def main(argv):
     elif c in ("up", "down") and len(argv) >= 2:
         return cmd_updown(c, argv[1], argv[2:])
     else:
-        print(__doc__); return 1
+        print(DOC_RU if LANG == "ru" else __doc__); return 1
     return 0
 
 

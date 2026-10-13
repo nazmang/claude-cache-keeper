@@ -23,6 +23,95 @@ let stopTick = null
 let agentsBin = 'agents'
 let expanded = ''        // the project opened in the checklist tab
 
+// --- language ---------------------------------------------------------------
+// AGENTS_LANG (ru|en) wins; otherwise the first non-empty of LC_ALL,
+// LC_MESSAGES, LANG: "ru..." is Russian, anything else English. Picked once,
+// when the session starts. `agents status --json` stays language-neutral.
+let LANG = 'en'
+export function setLang(l) { LANG = l === 'ru' ? 'ru' : 'en' }
+
+async function pickLang($) {
+  // $.env.get wants a literal name: the mod's variables must be listable
+  const forced = String((await $.env.get('AGENTS_LANG')) ?? '').trim().toLowerCase()
+  if (forced === 'ru' || forced === 'en') return forced
+  const loc = String((await $.env.get('LC_ALL')) ?? '').trim() ||
+    String((await $.env.get('LC_MESSAGES')) ?? '').trim() ||
+    String((await $.env.get('LANG')) ?? '').trim()
+  return /^ru/i.test(loc) ? 'ru' : 'en'
+}
+
+export const STRINGS = {
+  en: {
+    cmd_team: 'Open or close the panel: every live agent on this machine and what waits on you',
+    cmd_checklist: 'Open or close the checklist tab: open items by project, yours first',
+    tab_team: 'Team',
+    tab_checklist: 'Checklist',
+    not_placed: '{id}: {why}',
+    pane_not_placed: 'pane not placed',
+    loading: 'loading…',
+    band_loading: 'agents-panel: loading…',
+    band_error: 'agents-panel: {err}',
+    agents_failed: 'agents failed',
+    bad_json: 'agents: bad JSON',
+    nobody: 'nobody',
+    band_idle: '{n} idle ({a} 💤)',
+    band_waiting: 'waiting on you: {n}',
+    cold_wake: ' woke a cold cache',
+    no_snapshot: 'checklist: no snapshot yet',
+    waiting_line: 'waiting on you: {w} · open: {o} · snapshot {at}',
+    headline: '{b} working · {w} waiting · {a} asleep',
+    off: 'off',
+    h: 'h',
+    m: 'm',
+    open_n: '{n} open',
+    you_n: ' · {n} you',
+    later_n: ' · {n} later',
+    cl_head: '{o} open · {w} waiting on you · snapshot {at}',
+    cl_readonly: 'edit on the checklist page or ask an agent; this tab is read-only',
+    cl_none: 'no checklist snapshot yet',
+    not_in_tmux: '{name}: not in tmux',
+    tmux_failed: 'tmux failed',
+    messages: 'Messages, last 6 h ({n} woke a cold cache)',
+  },
+  ru: {
+    cmd_team: 'Открыть или закрыть панель: все живые агенты на этой машине и что ждёт тебя',
+    cmd_checklist: 'Открыть или закрыть вкладку чек-листа: открытые пункты по проектам, твои сверху',
+    tab_team: 'Команда',
+    tab_checklist: 'Чек-лист',
+    not_placed: '{id}: {why}',
+    pane_not_placed: 'панель не встала',
+    loading: 'загрузка…',
+    band_loading: 'agents-panel: загрузка…',
+    band_error: 'agents-panel: {err}',
+    agents_failed: 'agents не отработал',
+    bad_json: 'agents: кривой JSON',
+    nobody: 'никого',
+    band_idle: '{n} ждут ({a} 💤)',
+    band_waiting: 'ждут тебя: {n}',
+    cold_wake: ' разбудил остывший кэш',
+    no_snapshot: 'чек-лист: снимка пока нет',
+    waiting_line: 'ждут тебя: {w} · открыто: {o} · снимок {at}',
+    headline: '{b} работают · {w} ждут · {a} спят',
+    off: 'нет',
+    h: 'ч',
+    m: 'м',
+    open_n: '{n} открыто',
+    you_n: ' · {n} тебе',
+    later_n: ' · {n} на потом',
+    cl_head: '{o} открыто · {w} ждут тебя · снимок {at}',
+    cl_readonly: 'правь на странице чек-листа или попроси агента; вкладка только для чтения',
+    cl_none: 'снимка чек-листа пока нет',
+    not_in_tmux: '{name}: не в tmux',
+    tmux_failed: 'tmux не сработал',
+    messages: 'Сообщения за 6 ч ({n} разбудили остывший кэш)',
+  },
+}
+
+export function t(key, vars = {}) {
+  const tpl = STRINGS[LANG][key] ?? STRINGS.en[key] ?? key
+  return tpl.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
+}
+
 export const MODEL_COLORS = { haiku: '#3b82f6', sonnet: '#f59e0b', opus: '#a855f7', fable: '#22c55e' }
 
 export function modelColor(model) {
@@ -64,12 +153,12 @@ export function hhmm(ts) {
 
 export function messageLine(m) {
   if (!m) return ''
-  return `📨 ${hhmm(m.ts)} ${m.from} → ${m.to}${m.cold ? ' ❄ woke a cold cache' : ''}: ${m.text}`
+  return `📨 ${hhmm(m.ts)} ${m.from} → ${m.to}${m.cold ? ` ❄${t('cold_wake')}` : ''}: ${m.text}`
 }
 
 export function waitingLine(cl) {
-  if (!cl) return 'checklist: no snapshot yet'
-  return `waiting on you: ${cl.waiting.length} · open: ${cl.open} · snapshot ${hhmm(cl.snapshot)}`
+  if (!cl) return t('no_snapshot')
+  return t('waiting_line', { w: cl.waiting.length, o: cl.open, at: hhmm(cl.snapshot) })
 }
 
 async function refresh($) {
@@ -83,8 +172,8 @@ async function refresh($) {
     const home = await $.env.get('HOME')
     if (home) { agentsBin = `${home}/.local/bin/agents`; return refresh($) }
   }
-  if (r.exitCode !== 0) { error = (r.stderr || 'agents failed').split('\n')[0]; return }
-  try { data = JSON.parse(r.stdout); error = '' } catch { error = 'agents: bad JSON' }
+  if (r.exitCode !== 0) { error = (r.stderr || t('agents_failed')).split('\n')[0]; return }
+  try { data = JSON.parse(r.stdout); error = '' } catch { error = t('bad_json') }
 }
 
 export function bandLine(sessions, frameNo) {
@@ -92,17 +181,17 @@ export function bandLine(sessions, frameNo) {
   const asleep = sessions.filter((s) => s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0).length
   const who = busy.length
     ? busy.map((s) => `${figure(s.gender)}${s.display}`).join(' ')
-    : 'nobody'
-  return `${frameNo % 2 ? '⌛' : '⏳'} ${who} · ${sessions.length - busy.length} idle (${asleep} 💤)`
+    : t('nobody')
+  return `${frameNo % 2 ? '⌛' : '⏳'} ${who} · ${t('band_idle', { n: sessions.length - busy.length, a: asleep })}`
 }
 
 function band(Box, Text, e) {
-  if (!data) return <Text dimColor>{error ? `agents-panel: ${error}` : 'agents-panel: loading…'}</Text>
+  if (!data) return <Text dimColor>{error ? t('band_error', { err: error }) : t('band_loading')}</Text>
   const people = visible(data.sessions)
   const m = data.messages && data.messages[0]
   const parts = [bandLine(people, frame)]
   if (m) parts.push(`📨 ${hhmm(m.ts)} ${m.from}→${m.to}${m.cold ? ' ❄' : ''}`)
-  if (data.checklist) parts.push(`waiting on you: ${data.checklist.waiting.length}`)
+  if (data.checklist) parts.push(t('band_waiting', { n: data.checklist.waiting.length }))
   parts.push('/team')
   return <Text dimColor wrap="truncate-end">{parts.join(' · ')}</Text>
 }
@@ -113,7 +202,7 @@ export function visible(sessions) {
 
 function fmtDur(v) {
   if (v === null || v === undefined) return '—'
-  return v >= 600 ? `${Math.round(v / 60)}h` : `${Math.round(v)}m`
+  return v >= 600 ? `${Math.round(v / 60)}${t('h')}` : `${Math.round(v)}${t('m')}`
 }
 
 // --- pixel people -----------------------------------------------------------
@@ -218,13 +307,13 @@ export function activityIcon(s) {
 export function headline(sessions) {
   const busy = sessions.filter((s) => s.status === 'busy').length
   const asleep = sessions.filter((s) => s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0).length
-  return `${busy} working · ${sessions.length - busy - asleep} waiting · ${asleep} asleep`
+  return t('headline', { b: busy, w: sessions.length - busy - asleep, a: asleep })
 }
 
 function fmtMin(v) {
   if (v === null || v === undefined) return '—'
-  if (v <= 0) return 'off'
-  return v >= 600 ? `${Math.round(v / 60)}h` : `${Math.round(v)}m`
+  if (v <= 0) return t('off')
+  return v >= 600 ? `${Math.round(v / 60)}${t('h')}` : `${Math.round(v)}${t('m')}`
 }
 
 // open items of one project: those waiting on the person first
@@ -236,8 +325,8 @@ export function projectItems(cl, name) {
 }
 
 export function projectLabel(p) {
-  const you = p.waiting ? ` · ${p.waiting} you` : ''
-  return `${p.name}  ${p.todo} open${you}${p.later ? ` · ${p.later} later` : ''}`
+  const you = p.waiting ? t('you_n', { n: p.waiting }) : ''
+  return `${p.name}  ${t('open_n', { n: p.todo })}${you}${p.later ? t('later_n', { n: p.later }) : ''}`
 }
 
 async function togglePane($, id, title) {
@@ -245,18 +334,19 @@ async function togglePane($, id, title) {
   if (open) { await $.ui.close({ id }); return {} }
   await refresh($)
   const r = await $.ui.open({ id, title })
-  return r.isPlaced ? {} : { text: `${id}: ${r.reason || 'pane not placed'}` }
+  return r.isPlaced ? {} : { text: t('not_placed', { id, why: r.reason || t('pane_not_placed') }) }
 }
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'team', description: 'Open or close the panel: every live agent on this machine and what waits on you' })
-    await $.command.register({ name: 'checklist', description: 'Open or close the checklist tab: open items by project, yours first' })
+    LANG = await pickLang($)
+    await $.command.register({ name: 'team', description: t('cmd_team') })
+    await $.command.register({ name: 'checklist', description: t('cmd_checklist') })
     await refresh($)
     if ((await $.env.get('AGENTS_PANEL_OPEN')) === '1') {
       try {
-        await $.ui.open({ id: 'checklist', title: 'Checklist' })
-        await $.ui.open({ id: 'team', title: 'Team' })
+        await $.ui.open({ id: 'checklist', title: t('tab_checklist') })
+        await $.ui.open({ id: 'team', title: t('tab_team') })
       } catch {}
     }
     if (stopTick) stopTick.cancel()
@@ -269,18 +359,18 @@ export function register(on) {
   })
 
   // /team and /checklist toggle their tabs
-  on('command.run', { command: 'team' }, async ($) => togglePane($, 'team', 'Team'))
-  on('command.run', { command: 'checklist' }, async ($) => togglePane($, 'checklist', 'Checklist'))
+  on('command.run', { command: 'team' }, async ($) => togglePane($, 'team', t('tab_team')))
+  on('command.run', { command: 'checklist' }, async ($) => togglePane($, 'checklist', t('tab_checklist')))
 
   on('ui.render', { component: 'Pane', requestId: 'checklist' }, ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const cl = data && data.checklist
-    if (!cl) return <Text dimColor>{error || 'no checklist snapshot yet'}</Text>
+    if (!cl) return <Text dimColor>{error || t('cl_none')}</Text>
     const open = (name) => () => { expanded = expanded === name ? '' : name; $.ui.invalidate('ui.render') }
     return (
       <Box flexDirection="column">
-        <Text bold>{`${cl.open} open · ${cl.waiting.length} waiting on you · snapshot ${hhmm(cl.snapshot)}`}</Text>
-        <Text dimColor>edit on the checklist page or ask an agent; this tab is read-only</Text>
+        <Text bold>{t('cl_head', { o: cl.open, w: cl.waiting.length, at: hhmm(cl.snapshot) })}</Text>
+        <Text dimColor>{t('cl_readonly')}</Text>
         {(cl.projects || []).filter((p) => p.todo || p.later).map((p) => (
           <Box key={`p-${p.name}`} flexDirection="column" marginTop={1}>
             <Button key={`pb-${p.name}`} label={projectLabel(p)} plain onPress={open(p.name)}>
@@ -307,16 +397,16 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane', requestId: 'team' }, ($, e) => {
     const { Box, Text, Button, Raster } = $.ui.resolve(e)
-    if (!data) return <Text dimColor>{error || 'loading…'}</Text>
+    if (!data) return <Text dimColor>{error || t('loading')}</Text>
     const people = visible(data.sessions)
     const cl = data.checklist
     const waiting = cl ? groupByProject(cl.waiting.map((i) => ({ ...i, project: i.project || '?' }))) : []
     let n = 0
     // a press jumps to the agent's tmux window; a session outside tmux has none
     const jump = (s) => async () => {
-      if (!s.target) { $.ui.toast(`${s.display}: not in tmux`); return }
+      if (!s.target) { $.ui.toast(t('not_in_tmux', { name: s.display })); return }
       const r = await $.process.run(['tmux', 'switch-client', '-t', s.target], { timeoutMs: 5000 })
-      if (r.exitCode !== 0) $.ui.toast(`${s.display}: ${(r.stderr || 'tmux failed').split('\n')[0]}`)
+      if (r.exitCode !== 0) $.ui.toast(`${s.display}: ${(r.stderr || t('tmux_failed')).split('\n')[0]}`)
     }
     const card = (s) => {
       n += 1
@@ -350,7 +440,7 @@ export function register(on) {
         ))}
         {data.messages && data.messages.length ? (
           <Box marginTop={1} flexDirection="column">
-            <Text bold>{`Messages, last 6 h (${data.messages.filter((m) => m.cold).length} woke a cold cache)`}</Text>
+            <Text bold>{t('messages', { n: data.messages.filter((m) => m.cold).length })}</Text>
             {data.messages.slice(0, 8).map((m, i) => (
               <Text key={`m-${i}`} wrap="truncate-end" color={m.cold ? '#38bdf8' : undefined}>
                 {`${hhmm(m.ts)} ${m.cold ? '❄' : ' '} ${m.from} → ${m.to}: ${m.text}`}

@@ -4,9 +4,9 @@ import { coldVerdict } from '../hooks/register.js'
 const MIN = 60_000
 
 // Shared harness: clock, command registration, log, usage and a compact counter
-function setup(on, tokens: number, compactSkip?: string) {
+function setup(on, tokens: number, compactSkip?: string, env: Record<string, string> = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
-  mock.env(on, {})
+  mock.env(on, env)
   const calls = { compact: 0, logs: [] as string[] }
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: undefined }))
@@ -76,6 +76,35 @@ test('/cache reports the cache state', async ($, on) => {
   await clock.advance(20 * MIN)
   const a = await $.command.run({ command: 'cache', args: '' })
   expect(a.text).toMatch(/cache left ~40 min; context 120k; will compact after 30 more min idle/)
+})
+
+test('/cache speaks Russian under a Russian locale', async ($, on) => {
+  const { clock } = setup(on, 120_000, undefined, { LANG: 'ru_RU.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(20 * MIN)
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/кэш: осталось ~40 мин; контекст 120k; сожму через 30 мин простоя/)
+})
+
+test('AGENTS_LANG beats the locale, LC_ALL beats LANG, C means English', async ($, on) => {
+  const { clock } = setup(on, 120_000, undefined, { AGENTS_LANG: 'en', LANG: 'ru_RU.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(20 * MIN)
+  expect((await $.command.run({ command: 'cache', args: '' })).text).toMatch(/^cache left ~40 min/)
+})
+
+test('LC_ALL=C overrides a Russian LANG', async ($, on) => {
+  const { clock } = setup(on, 120_000, undefined, { LC_ALL: 'C', LANG: 'ru_RU.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(20 * MIN)
+  expect((await $.command.run({ command: 'cache', args: '' })).text).toMatch(/^cache left ~40 min/)
+})
+
+test('the compaction log is Russian too', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000, undefined, { AGENTS_LANG: 'ru' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(51 * MIN)
+  expect(calls.logs[0]).toMatch(/сжато после 5\d мин простоя/)
 })
 
 test('compact refused (turn running) - retry every minute, but not past the hour', async ($, on) => {

@@ -1,5 +1,5 @@
-import { expect, test } from 'claude-code/testing'
-import { projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
+import { expect, mock, test } from 'claude-code/testing'
+import { setLang, projectItems, projectLabel, bandLine, visible, messageLine, activityIcon, figure, groupByProject, headline, modelColor, shortModel, SPRITES, spriteCells, stateGlyph, waitingLine } from '../hooks/register.jsx'
 
 test('girls, boys and the rest', async () => {
   expect(figure('f')).toBe('👧')
@@ -70,4 +70,68 @@ test('checklist tab: yours first, label with counts', async () => {
     waiting: [{ id: 'b' }] } as never
   expect(projectItems(cl, 'P').map((i) => `${i.id}${i.mine ? '*' : ''}`)).toEqual(['b*', 'a'])
   expect(projectLabel({ name: 'P', todo: 2, later: 1, done: 5, waiting: 1 } as never)).toBe('P  2 open · 1 you · 1 later')
+})
+
+// --- language and surfaces ---------------------------------------------------
+const DATA = {
+  at: '2026-10-13T10:00:00+00:00',
+  sessions: [
+    { name: 'a', display: 'Rita', gender: 'f', project: 'P', status: 'busy', model: 'opus-5', idle_min: 1, cache_min: 59, ctx: 90000, tmux: 'P:a', target: '=P:0', pid: 1, tool: 'Read' },
+    { name: 'b', display: 'Gleb', gender: 'm', project: 'P', status: 'idle', model: 'sonnet-5', idle_min: 70, cache_min: -10, ctx: 0, tmux: null, target: null, pid: 2, tool: '' },
+  ],
+  checklist: { snapshot: 0, open: 3, waiting: [{ id: 'x', project: 'P', title: 't', who: 'you' }],
+    items: [{ id: 'x', project: 'P', title: 't', who: 'you' }],
+    projects: [{ name: 'P', todo: 3, later: 1, done: 0, waiting: 1 }] },
+  messages: [{ ts: 0, from: 'Rita', to: 'Gleb', text: 'hi', cold: true }],
+}
+
+function setupUi(on, env: Record<string, string>) {
+  mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u', ...env })
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(DATA), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+}
+
+const PROPS = { band: { component: 'AbovePrompt', props: {} }, team: { component: 'Pane', requestId: 'team', props: { title: 'Team', focused: false } },
+  checklist: { component: 'Pane', requestId: 'checklist', props: { title: 'Checklist', focused: false } } }
+
+test('band, /team and /checklist draw in English', async ($, on) => {
+  setupUi(on, { LANG: 'en_US.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  for (const surface of ['terminal'] as const) {
+    const band = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.band } as never)
+    expect(await band.find({ type: 'Text', text: /waiting on you: 1/ })).toBeDefined()
+    await band.unmount()
+    const team = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.team } as never)
+    expect(await team.find({ type: 'Text', text: /1 working · 0 waiting · 1 asleep/ })).toBeDefined()
+    await team.unmount()
+    const cl = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.checklist } as never)
+    expect(await cl.find({ type: 'Text', text: /3 open · 1 waiting on you/ })).toBeDefined()
+    await cl.unmount()
+  }
+})
+
+test('the same under a Russian locale', async ($, on) => {
+  setupUi(on, { LANG: 'ru_RU.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  for (const surface of ['terminal'] as const) {
+    const band = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.band } as never)
+    expect(await band.find({ type: 'Text', text: /ждут тебя: 1/ })).toBeDefined()
+    await band.unmount()
+    const team = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.team } as never)
+    expect(await team.find({ type: 'Text', text: /1 работают · 0 ждут · 1 спят/ })).toBeDefined()
+        await team.unmount()
+  }
+})
+
+test('pure helpers speak Russian after setLang', async () => {
+  setLang('ru')
+  try {
+    expect(waitingLine(null)).toMatch(/снимка пока нет/)
+    expect(headline([{ status: 'busy' }] as never[])).toBe('1 работают · 0 ждут · 0 спят')
+    expect(projectLabel({ name: 'P', todo: 2, later: 1, done: 5, waiting: 1 } as never)).toBe('P  2 открыто · 1 тебе · 1 на потом')
+    expect(bandLine([{ display: 'Rita', gender: 'f', status: 'idle', cache_min: -1 }] as never[], 0)).toBe('⏳ никого · 1 ждут (1 💤)')
+  } finally { setLang('en') }
 })

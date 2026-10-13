@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { destBranch, findPushes, NO, YES } from '../hooks/register.js'
+import { destBranch, findPushes, NO, STRINGS, YES } from '../hooks/register.js'
 
 test('finds pushes behind cd, -C and env prefixes', async () => {
   expect(findPushes('cd repo && git push')).toEqual([{ dir: 'repo', remote: 'origin', refs: [], skip: false }])
@@ -20,8 +20,8 @@ test('maps refspecs to destination branches', async () => {
 
 // gh answers per branch; git rev-parse answers the current branch
 // answer: what the person picks in the dialog; null = dismissed
-function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', ghFails = false, answer: string | null = NO) {
-  mock.env(on, { HOME: '/home/u', PUSH_GUARD_ASK_MIN: '1' })
+function setup(on, prsByBranch: Record<string, unknown[]>, current = 'feat/x', ghFails = false, answer: string | null = NO, env: Record<string, string> = {}) {
+  mock.env(on, { HOME: '/home/u', PUSH_GUARD_ASK_MIN: '1', ...env })
   on('ui.notify', () => ({ value: { isShown: true } }))
   const ran: string[][] = []
   const logs: string[] = []
@@ -125,4 +125,25 @@ test('no answer in time refuses instead of hanging', async ($, on) => {
   const r = await p
   expect(r.deny).toMatch(/nobody answered within 1 min/)
   expect(s.ran_tool()).toBe(0)
+})
+
+test('a Russian locale: question, options and log in Russian, the refusal for the model stays English', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, STRINGS.ru.no, { LANG: 'ru_RU.UTF-8' })
+  const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(s.asked[0]).toMatch(/ветка 'feat\/x' уже влита в 'main' \(PR #71\)/)
+  expect(s.logs[0]).toMatch(/отклонён/)
+  expect(r.deny).toMatch(/was already merged into 'main'.*the user declined the push/)
+})
+
+test('a Russian "yes" lets the push run; AGENTS_LANG=en beats a Russian LANG', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, STRINGS.ru.yes, { AGENTS_LANG: 'ru' })
+  const r = await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(r.deny).toBeUndefined()
+  expect(s.ran_tool()).toBe(1)
+})
+
+test('AGENTS_LANG=en beats a Russian LANG', async ($, on) => {
+  const s = setup(on, { 'feat/x': merged }, 'feat/x', false, NO, { AGENTS_LANG: 'en', LANG: 'ru_RU.UTF-8' })
+  await $.tool.call({ tool: 'Bash', command: 'git push' })
+  expect(s.asked[0]).toMatch(/is already merged into 'main'/)
 })

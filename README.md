@@ -159,6 +159,7 @@ terminal UI only.
 | `COMPACT_FROM` / `COMPACT_TO` | 53 / 59 | `agents compact-idle` window |
 | `MIN_CTX` | 60000 | `agents compact-idle` threshold |
 | `CACHE_TTL_MIN` | 60 | status line |
+| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads (status line, `agents`, the mods). Unset: the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` - `ru…` means Russian, anything else English. `status --json` and the text the model gets are never translated |
 
 If you are on the 5-minute cache TTL (e.g. usage overage), these defaults do
 not help — the cache is gone long before minute 50.

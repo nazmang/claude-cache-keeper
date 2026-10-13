@@ -124,6 +124,12 @@ git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keep
 
 Пороги и переменные — в таблице «Tuning» в [README.md](README.md#tuning).
 
+Язык: всё, что читает человек (строка статуса, `agents`, моды), выбирается по
+локали. Задан `AGENTS_LANG` (`ru` или `en`) — берётся он; иначе первое непустое
+из `LC_ALL`, `LC_MESSAGES`, `LANG`: начинается с `ru` — по-русски, иначе
+по-английски. `agents status --json` и текст отказов, который получает модель,
+не переводятся.
+
 ## Безопасность
 
 - `$.session.compact()` отказывает во время хода — мод повторит на следующем

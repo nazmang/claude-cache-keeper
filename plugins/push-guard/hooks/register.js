@@ -139,8 +139,50 @@ async function check($, cwd, branch) {
 }
 
 export const ASK_MIN_DEFAULT = 10
-export const YES = 'Yes, push anyway'
-export const NO = 'No, do not push'
+
+// --- language --------------------------------------------------------------
+// What the PERSON reads (the question, the notification, the log) follows the
+// locale; the refusal text the MODEL gets stays English. AGENTS_LANG (ru|en)
+// wins; otherwise the first non-empty of LC_ALL, LC_MESSAGES, LANG: "ru..." is
+// Russian, anything else English. This mod has no session.start hook, and a
+// question is rare, so the language is picked when the question is asked.
+async function pickLang($) {
+  // $.env.get wants a literal name: the mod's variables must be listable
+  const forced = String((await $.env.get('AGENTS_LANG')) ?? '').trim().toLowerCase()
+  if (forced === 'ru' || forced === 'en') return forced
+  const loc = String((await $.env.get('LC_ALL')) ?? '').trim() ||
+    String((await $.env.get('LC_MESSAGES')) ?? '').trim() ||
+    String((await $.env.get('LANG')) ?? '').trim()
+  return /^ru/i.test(loc) ? 'ru' : 'en'
+}
+
+export const STRINGS = {
+  en: {
+    question: "push-guard: '{branch}' is already merged into '{base}' (PR #{pr}). Push to it anyway?",
+    notify_title: 'An agent is waiting for you',
+    yes: 'Yes, push anyway',
+    no: 'No, do not push',
+    log_timeout: "push to merged branch '{branch}' refused: no answer in {min} min; the question left on screen no longer does anything (Esc closes it)",
+    log_allowed: "push to merged branch '{branch}' allowed by the user",
+    log_refused: "push to merged branch '{branch}' refused",
+  },
+  ru: {
+    question: "push-guard: ветка '{branch}' уже влита в '{base}' (PR #{pr}). Всё равно пушить?",
+    notify_title: 'Агент ждёт тебя',
+    yes: 'Да, всё равно пушить',
+    no: 'Нет, не пушить',
+    log_timeout: "пуш в влитую ветку '{branch}' отклонён: за {min} мин ответа нет; вопрос на экране уже ничего не делает (закрой его Esc)",
+    log_allowed: "пуш в влитую ветку '{branch}' разрешён тобой",
+    log_refused: "пуш в влитую ветку '{branch}' отклонён",
+  },
+}
+export const YES = STRINGS.en.yes
+export const NO = STRINGS.en.no
+
+function tr(lang, key, vars = {}) {
+  const tpl = STRINGS[lang][key] ?? STRINGS.en[key] ?? key
+  return tpl.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
+}
 
 function denyText(branch, pr, why) {
   const base = pr.baseRefName
@@ -170,12 +212,15 @@ export function register(on) {
         if (!pr) continue
         const raw = await $.env.get('PUSH_GUARD_ASK_MIN')
         const askMin = raw && !isNaN(Number(raw)) ? Number(raw) : ASK_MIN_DEFAULT
-        const question = `push-guard: '${b}' is already merged into '${pr.baseRefName}' (PR #${pr.number}). Push to it anyway?`
-        try { await $.ui.notify(question, { title: 'An agent is waiting for you' }) } catch {}
+        const lang = await pickLang($)
+        const t = (key, vars) => tr(lang, key, vars)
+        const [yes, no] = [t('yes'), t('no')]
+        const question = t('question', { branch: b, base: pr.baseRefName, pr: pr.number })
+        try { await $.ui.notify(question, { title: t('notify_title') }) } catch {}
         let answer = ''
         try {
           answer = await Promise.race([
-            $.ui.ask(question, { header: 'push-guard', options: [NO, YES] }),
+            $.ui.ask(question, { header: 'push-guard', options: [no, yes] }),
             // a clock that cannot sleep must not decide the race
             $.clock.sleep(askMin * 60000).then(() => 'timeout', () => new Promise(() => {})),
           ])
@@ -184,12 +229,11 @@ export function register(on) {
         }
         if (answer === 'timeout') {
           // the question cannot be closed from a mod: say it is stale
-          $.ui.log(`push to merged branch '${b}' refused: no answer in ${askMin} min; ` +
-            `the question left on screen no longer does anything (Esc closes it)`)
+          $.ui.log(t('log_timeout', { branch: b, min: askMin }))
           return { deny: denyText(b, pr, `nobody answered within ${askMin} min`) }
         }
-        if (answer === YES) { $.ui.log(`push to merged branch '${b}' allowed by the user`); continue }
-        $.ui.log(`push to merged branch '${b}' refused`)
+        if (answer === yes) { $.ui.log(t('log_allowed', { branch: b })); continue }
+        $.ui.log(t('log_refused', { branch: b }))
         return { deny: denyText(b, pr, answer ? 'the user declined the push' : 'nobody confirmed the push') }
       }
     }
