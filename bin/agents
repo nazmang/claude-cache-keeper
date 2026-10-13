@@ -26,7 +26,7 @@ Projects come from two files:
   ~/.config/agents/projects.conf  "project | dir | up command | down command" -
                                   a team with its own start/stop scripts; names
                                   are passed to them as arguments
-  ~/.config/agents/sessions.conf  "project | name | dir | model | session id" -
+  ~/.config/agents/sessions.conf  "project | name | dir | model | session id [| extra args]" -
                                   plain sessions, one per line. `up` opens each in
                                   tmux session <project>, window <name>, with
                                   `claude -n <name> --resume <id>`. Empty model =
@@ -35,6 +35,10 @@ Projects come from two files:
                                   A session already running (in tmux or not) is
                                   left alone. `down` closes only idle sessions
                                   with an empty input box, compacting first.
+                                  `up --fresh` ignores the stored id and starts a
+                                  new session (a nightly clean start); extra args
+                                  go to claude as written (e.g. --remote-control
+                                  Duty "start the shift").
 
 Why: the prompt cache lives 1 hour from the last request. A session that wakes
 up after an hour of idling writes its whole context into the cache again at
@@ -446,7 +450,7 @@ def team_project(name):
 
 
 def session_lines(name, names):
-    rows = [p + [""] * (5 - len(p)) for p in conf_lines(SESS_CONF) if p[0] == name]
+    rows = [p + [""] * (6 - len(p)) for p in conf_lines(SESS_CONF) if p[0] == name]
     if names:
         rows = [r for r in rows if r[1] in names]
     return rows
@@ -457,16 +461,21 @@ def save_session_id(project, name, sid):
     for i, line in enumerate(lines):
         parts = [p.strip() for p in line.split("#", 1)[0].split("|")]
         if len(parts) >= 2 and parts[0] == project and parts[1] == name:
-            parts += [""] * (5 - len(parts))
+            parts += [""] * (6 - len(parts))
             parts[4] = sid
-            lines[i] = " | ".join(parts) + "\n"
+            lines[i] = " | ".join(parts[:5] + ([parts[5]] if parts[5] else [])) + "\n"
     with open(SESS_CONF, "w") as f:
         f.writelines(lines)
 
 
-def sessions_up(project, rows):
+def sessions_up(project, rows, fresh=False):
     live = {s["sid"]: s for s in sessions()}
-    for _, name, d, model, sid in rows:
+    for _, name, d, model, sid, extra in rows:
+        if fresh and sid in live:
+            print(f"  = {name}: running - `agents down {project}` first")
+            continue
+        if fresh:
+            sid = ""
         if sid and sid in live:
             s = live[sid]
             print(f"  = {name}: already running (pid {s['pid']}, {s['label'] or 'no tmux'})")
@@ -480,6 +489,8 @@ def sessions_up(project, rows):
             sid = str(uuid.uuid4())
             args += ["--session-id", sid]
             save_session_id(project, name, sid)
+        if extra:
+            args += shlex.split(extra)
         # A tmux server keeps the environment it was started with; drop
         # CLAUDE* so the new session does not think it runs inside another one.
         cmd = "for v in ${!CLAUDE@}; do unset $v; done; exec " + " ".join(shlex.quote(a) for a in args)
@@ -536,10 +547,12 @@ def cmd_updown(which, name, names):
         env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
         return subprocess.run(["bash", "-c", f'{cmd} "$@"', "_", *names],
                               cwd=os.path.expanduser(d), env=env).returncode
+    fresh = "--fresh" in names
+    names = [n for n in names if n != "--fresh"]
     rows = session_lines(name, names)
     if not rows:
         sys.exit(f"no project '{name}' in {CONF} or {SESS_CONF}")
-    return sessions_up(name, rows) if which == "up" else sessions_down(name, rows)
+    return sessions_up(name, rows, fresh) if which == "up" else sessions_down(name, rows)
 
 
 def main(argv):
