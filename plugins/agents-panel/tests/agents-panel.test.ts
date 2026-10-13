@@ -97,10 +97,10 @@ function setupUi(on, env: Record<string, string>) {
 const PROPS = { band: { component: 'AbovePrompt', props: {} }, team: { component: 'Pane', requestId: 'team', props: { title: 'Team', focused: false } },
   checklist: { component: 'Pane', requestId: 'checklist', props: { title: 'Checklist', focused: false } } }
 
-test('band, /team and /checklist draw in English', async ($, on) => {
+test('band, /team and /checklist draw on terminal and desktop, in English', async ($, on) => {
   setupUi(on, { LANG: 'en_US.UTF-8' })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  for (const surface of ['terminal'] as const) {
+  for (const surface of ['terminal', 'desktop'] as const) {
     const band = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.band } as never)
     expect(await band.find({ type: 'Text', text: /waiting on you: 1/ })).toBeDefined()
     await band.unmount()
@@ -113,16 +113,18 @@ test('band, /team and /checklist draw in English', async ($, on) => {
   }
 })
 
-test('the same under a Russian locale', async ($, on) => {
+test('the same under a Russian locale; the desktop figure is an emoji, not a Raster', async ($, on) => {
   setupUi(on, { LANG: 'ru_RU.UTF-8' })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  for (const surface of ['terminal'] as const) {
+  for (const surface of ['terminal', 'desktop'] as const) {
     const band = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.band } as never)
     expect(await band.find({ type: 'Text', text: /ждут тебя: 1/ })).toBeDefined()
     await band.unmount()
     const team = await $.ui.mount({ plugin: 'agents-panel', surface, ...PROPS.team } as never)
     expect(await team.find({ type: 'Text', text: /1 работают · 0 ждут · 1 спят/ })).toBeDefined()
-        await team.unmount()
+    expect(await team.find({ type: 'Raster' } as never) !== undefined).toBe(surface === 'terminal')
+    if (surface === 'desktop') expect(await team.find({ type: 'Text', text: '👧' })).toBeDefined()
+    await team.unmount()
   }
 })
 

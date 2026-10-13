@@ -412,10 +412,10 @@ export function register(on) {
       n += 1
       const busy = s.status === 'busy'
       const asleep = s.status === 'idle' && s.cache_min !== null && s.cache_min <= 0
-      const pic = Raster
+      const pic = Raster && e.surface === 'terminal'
         ? <Raster key={`r-${s.pid}`} columns={10} rows={6}
             cells={spriteCells(s.gender, modelColor(s.model), { lift: busy && frame % 2 === 1, dim: asleep })} />
-        : <Text color={modelColor(s.model)}>{figure(s.gender)}</Text>
+        : <Text color={modelColor(s.model)} dimColor={asleep}>{figure(s.gender)}</Text>
       // a Button holds text only: picture above, the clickable name under it
       return (
         <Box key={`a-${s.pid}`} flexDirection="column" alignItems="center" width={14}>
