@@ -26,7 +26,7 @@ short summary, so the next wake-up is small.
 
 | part | what it does | needs |
 |---|---|---|
-| `plugins/cache-keeper/` — **cache-keeper mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. | Claude Code with mods (tested on 2.1.296) |
+| `plugins/cache-keeper/` — **cache-keeper mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
 | `bin/agents` | `agents status` — every live session on the machine: status, idle, cache left, context, model, tmux window. `agents compact-idle` — fallback compaction for sessions started without the mod. | Python 3, tmux for compaction |
 | `systemd/` | Runs `agents compact-idle` every 2 min (window 53–59 min). | systemd user session |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
@@ -133,6 +133,13 @@ not help — the cache is gone long before minute 50.
   status is `idle` **and** the input box is empty (detected on screen after the
   `❯` prompt). Sessions outside tmux are never touched.
 - Subagent turns do not reset the idle clock — they have their own cache.
+- The cold-cache question only stops prompts typed by a person (terminal or
+  phone bridge); messages from other sessions, task notifications and
+  scheduled triggers go through untouched. Compaction cannot run inside the
+  submit hook, so "compact then send" drops the prompt, compacts, and you
+  press Enter again.
+- Thresholds (`CACHE_KEEPER_*`) are read from `settings.json` `env`, not from
+  the shell environment.
 
 ## Lessons learned
 

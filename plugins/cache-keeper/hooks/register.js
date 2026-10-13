@@ -6,6 +6,10 @@
 // the context from the cache (cheap) and leaves a short summary, so the next
 // wake-up costs next to nothing.
 //
+// When the person sends a message into a session whose cache has already
+// expired, the mod asks first: compact then send, send as is, or keep the
+// draft. A cold send rewrites the whole context into the cache.
+//
 // Each session compacts only itself, so there is no shared loop to coordinate.
 // Fallback for sessions started without the mod: `agents compact-idle` from a
 // systemd timer (window 53-59 min). The mod fires earlier, so the timer then
@@ -56,6 +60,36 @@ async function compactNow($, idle, tokens) {
   if (!lastNote.startsWith('compaction failed')) lastRequest = (await $.clock.now())
 }
 
+// Who typed it: only a person at the prompt (or on the phone bridge) can
+// answer a question; peers, task notifications and triggers pass untouched.
+const HUMAN = new Set(['composer', 'bridge'])
+
+// Should a submission be stopped for the cold-cache question?
+export function coldVerdict({ idleMin, tokens, origin, turnId, cacheMin, minTokens }) {
+  if (!origin || !HUMAN.has(origin.kind)) return false
+  if (turnId) return false                 // typed into a running turn: cache is warm
+  if (idleMin < cacheMin) return false
+  return tokens >= minTokens
+}
+
+export const COMPACT_SEND = 'Compact, then send'
+export const SEND = 'Send as is'
+export const KEEP = 'Do not send'
+
+function compactThenTell($, k) {
+  ;(async () => {
+    await $.clock.sleep(300)
+    try {
+      await $.session.compact()
+      lastRequest = await $.clock.now()
+      lastNote = `compacted before a cold send (was ${k}k)`
+      $.ui.log(`${lastNote} - press Enter to send your message`)
+    } catch (err) {
+      $.ui.log(`compaction failed: ${err?.message ?? err} - press Enter to send as is`)
+    }
+  })()
+}
+
 export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -81,6 +115,34 @@ export function register(on) {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) lastRequest = (await $.clock.now())
     return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    const idle = await minutesIdle($)
+    let tokens = 0
+    try { tokens = (await $.session.usage()).context?.tokens ?? 0 } catch { tokens = 0 }
+    if (!coldVerdict({ idleMin: idle, tokens, origin: e.origin, turnId: e.turnId,
+      cacheMin: CACHE_MIN, minTokens: MIN_TOKENS })) return next(e)
+    const k = Math.round(tokens / 1000)
+    let answer = ''
+    try {
+      answer = await $.ui.ask(
+        `The prompt cache expired ${Math.round(idle - CACHE_MIN)} min ago. Sending now writes the whole ` +
+        `context (~${k}k tokens) into the cache again at full price. What should happen?`,
+        { header: 'cold cache', options: [COMPACT_SEND, SEND, KEEP] })
+    } catch {
+      answer = KEEP
+    }
+    if (answer === SEND) return next(e)
+    if (answer === COMPACT_SEND) {
+      // compact cannot run under the turn this hook holds: drop the prompt
+      // (the engine puts the text back into the input box), compact right
+      // after, then the person presses Enter again into a small context
+      compactThenTell($, k)
+      return { drop: 'cache-keeper: compacting first; press Enter again once it says done' }
+    }
+    // the engine puts a dropped prompt back into the input box by itself
+    return { drop: 'cache-keeper: not sent (cold cache); the text stays in the input box' }
   })
 
   on('command.run', { command: 'cache' }, async ($) => {

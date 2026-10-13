@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { coldVerdict } from '../hooks/register.js'
 
 const MIN = 60_000
 
@@ -105,4 +106,15 @@ test('thresholds from the environment', async ($, on) => {
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
   await clock.advance(2 * MIN + 10_000)
   expect(n).toBe(1)
+})
+
+test('cold-cache question only for a person, an idle session and a big context', async () => {
+  const base = { idleMin: 75, tokens: 200_000, origin: { kind: 'composer' }, turnId: undefined, cacheMin: 60, minTokens: 60_000 }
+  expect(coldVerdict(base)).toBe(true)
+  expect(coldVerdict({ ...base, origin: { kind: 'bridge' } })).toBe(true)
+  expect(coldVerdict({ ...base, origin: { kind: 'peer' } })).toBe(false)
+  expect(coldVerdict({ ...base, origin: { kind: 'task-notification' } })).toBe(false)
+  expect(coldVerdict({ ...base, idleMin: 30 })).toBe(false)
+  expect(coldVerdict({ ...base, tokens: 10_000 })).toBe(false)
+  expect(coldVerdict({ ...base, turnId: 't1' })).toBe(false)
 })
