@@ -31,12 +31,16 @@ short summary, so the next wake-up is small.
 |---|---|---|
 | `plugins/cache-keeper/` (the mod) | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
 | `bin/cache-keeper-idle` | Fallback for sessions started without the mod: compacts tmux sessions idle 53–59 min by typing `/compact` into their pane. | Python 3, tmux |
-| `systemd/` | Runs `cache-keeper-idle` every 2 min. | systemd user session |
+| `systemd/` | Runs `cache-keeper-idle` every 2 min. Optional. | systemd user session, tmux |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
 
-The layers overlap on purpose: the mod fires first; the timer catches sessions
-that were started before the mod was installed; the status line lets a human
-see it.
+The mod is all you need, and it works without tmux. The timer is an optional
+safety net for sessions that run **without** the mod: started before you
+installed it (a running session never loads a new mod), or started with
+settings that do not list it. It types `/compact` into a tmux pane, so it only
+reaches sessions inside tmux. Once every session has been restarted with the
+mod, it has nothing left to do: on our machine it fired 4 times on install day
+and never in the week after. The status line lets a human see it all.
 
 ## Does it pay off
 
