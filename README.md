@@ -10,18 +10,18 @@ Keeps long-lived [Claude Code](https://claude.com/claude-code) sessions cheap to
 ## The problem
 
 If you keep several Claude Code sessions open for days (an agent team in tmux,
-a few project tabs), most of the bill is not the work itself — it is the
-**wake-ups**.
+a few project tabs), most of the bill is not the work itself but the
+wake-ups.
 
-- The prompt cache lives **1 hour** after the last request to the model.
+- The prompt cache lives 1 hour after the last request to the model.
 - While it is alive, the context is read from the cache at a fraction of the price.
-- After an hour of idling the cache is gone. The next message — yours, another
-  agent's, a scheduled ping — writes the **whole context** into the cache again
+- After an hour of idling the cache is gone. The next message (yours, another
+  agent's, a scheduled ping) writes the whole context into the cache again
   at full price. A 400k-token session pays for 400k tokens just to say "ok".
 - Pinging a session to "keep the cache warm" only buys another hour and costs
   money every time. An idle open session costs nothing.
 
-The fix: `/compact` a large idle session a few minutes **before** the cache
+The fix: `/compact` a large idle session a few minutes before the cache
 expires. Compaction still reads the context from the cache (cheap) and leaves a
 short summary, so the next wake-up is small.
 
@@ -29,7 +29,7 @@ short summary, so the next wake-up is small.
 
 | part | what it does | needs |
 |---|---|---|
-| `plugins/cache-keeper/` — **the mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
+| `plugins/cache-keeper/` (the mod) | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
 | `bin/cache-keeper-idle` | Fallback for sessions started without the mod: compacts tmux sessions idle 53–59 min by typing `/compact` into their pane. | Python 3, tmux |
 | `systemd/` | Runs `cache-keeper-idle` every 2 min. | systemd user session |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
@@ -58,7 +58,7 @@ models with different prices add up.
   sessions were used.
 - Compactions are not free: each one reads the context from the cache and
   writes a summary (~5k output tokens). Over 6 days 158 compactions cost about
-  6.5M equivalents and saved about 26M on the wake-ups that followed — net
+  6.5M equivalents and saved about 26M on the wake-ups that followed: net
   ≈ 3M a day.
 - 8 of 158 sessions were never woken again: that compaction was wasted. A
   context under `CACHE_KEEPER_MIN_TOKENS` is skipped for the same reason.
@@ -74,7 +74,7 @@ git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keep
 ```
 
 The installer cuts a release (`release.sh`), links `cache-keeper-idle` and
-`cache-segment.sh` from it into `~/.local/bin` and enables the systemd timer. It does **not** touch `settings.json`; add this
+`cache-segment.sh` from it into `~/.local/bin` and enables the systemd timer. It does not touch `settings.json`; add this
 yourself:
 
 ```jsonc
@@ -107,14 +107,14 @@ Or try a mod in one session: `claude --plugin-dir ~/src/claude-cache-keeper/plug
 - Log of the fallback: `~/.local/state/cache-keeper/idle.log`.
 - Is the mod working? It writes no log file. Look for `compact_boundary` in a
   session's transcript about 50 minutes after its last reply. The log above has
-  only the fallback's compactions — if it fills up, some sessions run without
+  only the fallback's compactions. If it fills up, some sessions run without
   the mod.
 - A table of all live sessions with idle time, cache left and context:
   `agents status` from [claude-agents-kit](https://github.com/nazmang/claude-agents-kit).
 
 ### Releases: never load mods from the tree you edit
 
-Running sessions **hot-reload** a mod whenever its files change. If settings
+Running sessions hot-reload a mod whenever its files change. If settings
 point at your working tree, every half-finished save lands in every agent at
 once (we learned this the hard way). So:
 
@@ -150,9 +150,9 @@ not help — the cache is gone long before minute 50.
 - The mod uses `$.session.compact()`, which refuses while a turn is running;
   the next tick retries. A half-typed draft in the input box is preserved.
 - `cache-keeper-idle` types `/compact` into a tmux pane only if the session
-  status is `idle` **and** the input box is empty (detected on screen after the
+  status is `idle` and the input box is empty (detected on screen after the
   `❯` prompt). Sessions outside tmux are never touched.
-- Subagent turns do not reset the idle clock — they have their own cache.
+- Subagent turns do not reset the idle clock: they have their own cache.
 - The cold-cache question only stops prompts typed by a person (terminal or
   phone bridge); messages from other sessions, task notifications and
   scheduled triggers go through untouched. Compaction cannot run inside the
@@ -169,11 +169,11 @@ not help — the cache is gone long before minute 50.
 - The timer interval must be well below the compaction window. With a 5-minute
   timer (which really fires every ~5.5 min) and a 4-minute window, a 191k
   session slipped through.
-- Before restarting a session with `--resume`, compact it first — otherwise the
+- Before restarting a session with `--resume`, compact it first, otherwise the
   whole uncompacted tail is written to the cache again.
 - The last `usage` in a transcript overstates the context if a compaction came
   after it.
-- Running sessions hot-reload a mod on every save — hence `release.sh`.
+- Running sessions hot-reload a mod on every save, hence `release.sh`.
 - `$.session.compact()` cannot be called from the `prompt.submit` hook: it
   holds the turn.
 
