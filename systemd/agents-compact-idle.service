@@ -1,6 +1,0 @@
-[Unit]
-Description=Compact idle Claude Code sessions before their prompt cache expires (agents compact-idle)
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/agents compact-idle

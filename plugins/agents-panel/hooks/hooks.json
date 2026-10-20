@@ -1,1 +1,0 @@
-{ "description": "agents-panel: who is working, what waits on you", "modules": ["./register.jsx"] }

@@ -1,5 +1,5 @@
 [Unit]
-Description=Run agents compact-idle every 2 minutes
+Description=Run cache-keeper-idle every 2 minutes
 
 [Timer]
 OnBootSec=2min

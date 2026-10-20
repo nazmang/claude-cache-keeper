@@ -11,7 +11,7 @@
 // draft. A cold send rewrites the whole context into the cache.
 //
 // Each session compacts only itself, so there is no shared loop to coordinate.
-// Fallback for sessions started without the mod: `agents compact-idle` from a
+// Fallback for sessions started without the mod: `cache-keeper-idle` from a
 // systemd timer (window 53-59 min). The mod fires earlier, so the timer then
 // sees nothing left to compact.
 

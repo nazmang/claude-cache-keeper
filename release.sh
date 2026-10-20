@@ -33,7 +33,7 @@ if command -v claude >/dev/null; then
     fi
   done
 fi
-python3 -m py_compile bin/agents
+python3 -m py_compile bin/cache-keeper-idle
 
 sha=$(git rev-parse --short HEAD)
 mkdir -p "$DEST/releases"

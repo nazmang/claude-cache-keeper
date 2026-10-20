@@ -1,8 +1,0 @@
-{
-  "name": "push-guard",
-  "version": "0.1.0",
-  "description": "Stops `git push` to a branch whose pull request is already merged - the new commits would never reach the base branch",
-  "author": { "name": "Nazman Gena" },
-  "homepage": "https://github.com/nazmang/claude-cache-keeper",
-  "license": "MIT"
-}

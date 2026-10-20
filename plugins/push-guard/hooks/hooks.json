@@ -1,1 +1,0 @@
-{ "description": "push-guard: no pushes to merged branches", "modules": ["./register.js"] }

@@ -4,6 +4,9 @@ Keeps long-lived [Claude Code](https://claude.com/claude-code) sessions cheap to
 
 [Русская версия](README.ru.md)
 
+> `agents`, the agents-panel and push-guard mods used to live here. They moved
+> to [claude-agents-kit](https://github.com/nazmang/claude-agents-kit).
+
 ## The problem
 
 If you keep several Claude Code sessions open for days (an agent team in tmux,
@@ -26,16 +29,42 @@ short summary, so the next wake-up is small.
 
 | part | what it does | needs |
 |---|---|---|
-| `plugins/cache-keeper/` — **cache-keeper mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
-| `bin/agents` | `agents status` — every live session on the machine: status, idle, cache left, context, model, tmux window. `agents compact-idle` — fallback compaction for sessions started without the mod. | Python 3, tmux for compaction |
-| `systemd/` | Runs `agents compact-idle` every 2 min (window 53–59 min). | systemd user session |
+| `plugins/cache-keeper/` — **the mod** | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
+| `bin/cache-keeper-idle` | Fallback for sessions started without the mod: compacts tmux sessions idle 53–59 min by typing `/compact` into their pane. | Python 3, tmux |
+| `systemd/` | Runs `cache-keeper-idle` every 2 min. | systemd user session |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
-| `plugins/push-guard/` — **push-guard mod** | Stops `git push` to a branch whose PR is already merged (the commits would never reach the base branch) and asks **you** in a dialog; only your “yes” lets it run, otherwise the agent is told to start a fresh branch. There is no override the model can type itself. No answer within `PUSH_GUARD_ASK_MIN` minutes (10) is a refusal, so an unattended agent never hangs on the question; a desktop notification tells you an agent is waiting. Unknown repos and missing `gh` pass through. | `gh` logged in |
-| `plugins/agents-panel/` — **agents-panel mod** | A one-line band above the prompt: who is working right now, how many sessions are idle and how many of them have a cold cache (💤), the latest message between sessions, and how many checklist items wait on you. `/team` toggles the full pane: every live session as a pixel girl or boy (`people.conf`) in the model's colour (Haiku blue, Sonnet amber, Opus purple, Fable green), what each is doing, the recent messages; click a name (or press 1–9) to jump to its tmux window. `/checklist` toggles a read-only tab with open items by project, yours first. | `bin/agents` on `PATH` |
 
 The layers overlap on purpose: the mod fires first; the timer catches sessions
 that were started before the mod was installed; the status line lets a human
 see it.
+
+## Does it pay off
+
+Measured on one machine with ~10 long-lived sessions (an agent team in tmux plus
+project tabs), from the transcripts' `usage` fields only. Cost is in input-token
+equivalents (1-hour cache write 2.0, cache read 0.1, input 1.0, output 5.0), so
+models with different prices add up.
+
+| per day, average | before (9 days) | after (6 days) |
+|---|---|---|
+| requests | 1041 | 1577 |
+| cold wake-ups (> 60 min idle) | 11 | 21 |
+| tokens written to the cache **per cold wake-up** | 536k | **61k** (−89 %) |
+| cache writes on cold wake-ups | 5.9M | 1.3M (−78 %) |
+| cost per request | 67k | **25k** (−63 %) |
+
+- The per-wake-up line is the clean effect: it barely depends on how much work
+  was done. The per-request drop also includes other changes in how the
+  sessions were used.
+- Compactions are not free: each one reads the context from the cache and
+  writes a summary (~5k output tokens). Over 6 days 158 compactions cost about
+  6.5M equivalents and saved about 26M on the wake-ups that followed — net
+  ≈ 3M a day.
+- 8 of 158 sessions were never woken again: that compaction was wasted. A
+  context under `CACHE_KEEPER_MIN_TOKENS` is skipped for the same reason.
+
+To measure your own: compare the average `cache_creation_input_tokens` of the
+first request after more than an hour of silence, before and after installing.
 
 ## Install
 
@@ -44,7 +73,7 @@ git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keep
 ~/src/claude-cache-keeper/install.sh
 ```
 
-The installer cuts a release (`release.sh`), links `agents` and
+The installer cuts a release (`release.sh`), links `cache-keeper-idle` and
 `cache-segment.sh` from it into `~/.local/bin` and enables the systemd timer. It does **not** touch `settings.json`; add this
 yourself:
 
@@ -52,7 +81,7 @@ yourself:
 // ~/.claude/settings.json
 {
   // several plugins: colon-separated (a comma does not work)
-  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/.local/share/claude-cache-keeper/current/plugins/cache-keeper:/home/you/.local/share/claude-cache-keeper/current/plugins/push-guard:/home/you/.local/share/claude-cache-keeper/current/plugins/agents-panel" },
+  "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/home/you/.local/share/claude-cache-keeper/current/plugins/cache-keeper" },
   "statusLine": {
     "type": "command",
     "command": "/home/you/src/claude-cache-keeper/statusline/example-statusline.sh",
@@ -72,43 +101,16 @@ Or try a mod in one session: `claude --plugin-dir ~/src/claude-cache-keeper/plug
 
 ## Usage
 
-```text
-$ agents status
-session                      status      idle   cache   context  model / window
-Coordinator                  idle         34m     26m   compact  sonnet-5-5 / team:Coordinator
-Reviewer                     idle        114m expired      191k  opus-5-5 / team:Reviewer
-webapp-dev                   busy          0m     60m       77k  opus-5-5 / no tmux
-```
-
-- `context` = `compact` means nothing has been added since the last compaction.
-- `agents compact <name> --wait` — compact one session now and wait until the
-  transcript gets a new `compact_boundary`.
-- `agents up|down <project> [names…]` — start/stop a project's sessions in tmux.
-  - Plain sessions: list them in `~/.config/agents/sessions.conf`
-    (`project | name | dir | model | session id`). `up` opens tmux session
-    `<project>`, one window per line, with `claude -n <name> --resume <id>`; a
-    line without an id starts a new session and records its id. Sessions that
-    are already running — in tmux or in some terminal tab — are left alone.
-    `down` compacts each session first, then sends `/exit`; busy sessions and
-    drafts in the input box are skipped.
-  - Teams with their own start/stop scripts: `~/.config/agents/projects.conf`
-    (`project | dir | up command | down command`).
-  - Moving a session from a terminal tab into tmux: `/compact`, `/exit` in the
-    tab, then `agents up <project>`.
-- `agents down <project> --no-compact` closes without compacting — for a
-  session whose cache is already cold, where compaction would itself re-read
-  the whole context at full price. `agents up <project> --fresh` ignores the
-  stored id and starts a new session (e.g. a nightly clean restart of a
-  watcher). An optional 6th column in `sessions.conf` adds extra `claude`
-  arguments for that session.
-- A session that only runs a background shell or monitor shows as `shell`; it
-  counts as free, and `down` answers the "Background work is running" dialog
-  itself.
-- `agents messages [--hours H]` — messages between sessions (SendMessage);
-  ❄ marks a message that woke a recipient with an expired cache.
 - Inside a session: `/cache` →
   `cache left ~40 min; context 120k; will compact after 30 more min idle`.
-- Log: `~/.local/state/agents/compact-idle.log`.
+- `cache-keeper-idle --dry-run` — what the fallback would compact right now.
+- Log of the fallback: `~/.local/state/cache-keeper/idle.log`.
+- Is the mod working? It writes no log file. Look for `compact_boundary` in a
+  session's transcript about 50 minutes after its last reply. The log above has
+  only the fallback's compactions — if it fills up, some sessions run without
+  the mod.
+- A table of all live sessions with idle time, cache left and context:
+  `agents status` from [claude-agents-kit](https://github.com/nazmang/claude-agents-kit).
 
 ### Releases: never load mods from the tree you edit
 
@@ -120,33 +122,12 @@ once (we learned this the hard way). So:
   `claude plugin test` for every plugin, copies the committed `bin/`,
   `plugins/` and `statusline/` to `~/.local/share/claude-cache-keeper/releases/<sha>`
   and switches `current` atomically. `--list`, `--rollback <sha>`.
-- Settings, `~/.local/bin/agents` and the timer point at
+- Settings, `~/.local/bin/cache-keeper-idle` and the timer point at
   `~/.local/share/claude-cache-keeper/current/...`, never at the repo.
 - It also refuses untracked files: a file that only exists in your tree
   would be missing from every other clone (`release.sh` itself once was).
 - Develop in a separate worktree (`git worktree add ../claude-cache-keeper-dev -b dev`),
   merge into `main`, then release.
-
-### agents-panel data
-
-The mod has no file system, so it asks `agents status --json --max-age 5`; the
-answer is cached, so all sessions together recompute it at most every 5 s.
-
-- `~/.config/agents/people.conf` — `session name | display name | f|m|-` (see `examples/`).
-- Checklist: one JSON per item in `~/.local/state/agents/checklist/items/`
-  (`{id, data: {project, title, who, status}}`) — e.g. a dump of a Claude
-  artifact database. Open items (`status: todo`) whose `who` is in `OWNER_WHO`
-  (default `owner,together,you` and their Russian twins) count as waiting on you.
-
-### A dashboard window
-
-Start one cheap session (any model; it never sends a request) with
-`AGENTS_PANEL_OPEN=1` in the `env` of its own settings file
-(`claude --settings ~/.config/agents/panel-settings.json`), and it opens `/team`
-and `/checklist` by itself. Mark it `x` in `people.conf` so it does not show up
-among the agents. Panes stand beside the prompt only when the terminal is wide
-enough; otherwise they open above it. Pixel figures (`Raster`) are drawn by the
-terminal UI only.
 
 ### Tuning
 
@@ -156,10 +137,10 @@ terminal UI only.
 | `CACHE_KEEPER_MIN_TOKENS` | 60000 | mod: skip smaller contexts |
 | `CACHE_KEEPER_CACHE_MIN` | 60 | mod: cache TTL |
 | `CACHE_KEEPER_TICK_MS` | 60000 | mod: check interval |
-| `COMPACT_FROM` / `COMPACT_TO` | 53 / 59 | `agents compact-idle` window |
-| `MIN_CTX` | 60000 | `agents compact-idle` threshold |
+| `COMPACT_FROM` / `COMPACT_TO` | 53 / 59 | `cache-keeper-idle` window |
+| `MIN_CTX` | 60000 | `cache-keeper-idle` threshold |
 | `CACHE_TTL_MIN` | 60 | status line |
-| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads (status line, `agents`, the mods). Unset: the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` - `ru…` means Russian, anything else English. `status --json` and the text the model gets are never translated |
+| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads (status line, `/cache`, the dialog, the log). Unset: the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` - `ru…` means Russian, anything else English. The text the model gets is never translated |
 
 If you are on the 5-minute cache TTL (e.g. usage overage), these defaults do
 not help — the cache is gone long before minute 50.
@@ -168,7 +149,7 @@ not help — the cache is gone long before minute 50.
 
 - The mod uses `$.session.compact()`, which refuses while a turn is running;
   the next tick retries. A half-typed draft in the input box is preserved.
-- `agents compact-idle` types `/compact` into a tmux pane only if the session
+- `cache-keeper-idle` types `/compact` into a tmux pane only if the session
   status is `idle` **and** the input box is empty (detected on screen after the
   `❯` prompt). Sessions outside tmux are never touched.
 - Subagent turns do not reset the idle clock — they have their own cache.
@@ -183,8 +164,8 @@ not help — the cache is gone long before minute 50.
 ## Lessons learned
 
 - Do not decide that `/compact` has finished by looking at the screen: an old
-  `Compacted` line may still be visible. `agents compact --wait` checks the
-  transcript for a new `compact_boundary`.
+  `Compacted` line may still be visible. Check the transcript for a new
+  `compact_boundary`.
 - The timer interval must be well below the compaction window. With a 5-minute
   timer (which really fires every ~5.5 min) and a 4-minute window, a 191k
   session slipped through.
@@ -195,15 +176,28 @@ not help — the cache is gone long before minute 50.
 - Running sessions hot-reload a mod on every save — hence `release.sh`.
 - `$.session.compact()` cannot be called from the `prompt.submit` hook: it
   holds the turn.
-- Dev and release copies of `agents` share one `status.json` cache; test a mod
-  after releasing it, not from the dev tree.
 
 ## Tests
 
 ```bash
 claude --plugin-dir plugins/cache-keeper   # once, interactively: generates .claude-plugin/types
-for p in plugins/*; do claude plugin validate $p && claude plugin test $p; done
+claude plugin validate plugins/cache-keeper && claude plugin test plugins/cache-keeper
 ```
+
+## Uninstall
+
+```bash
+systemctl --user disable --now cache-keeper-idle.timer
+rm ~/.config/systemd/user/cache-keeper-idle.{service,timer} ~/.local/bin/{cache-keeper-idle,cache-segment.sh}
+```
+
+Remove `CLAUDE_CODE_PLUGIN_DIRS` and the status line from `settings.json`, then
+restart the sessions. `~/.local/share/claude-cache-keeper/` and
+`~/.local/state/cache-keeper/` can be deleted afterwards.
+
+Upgrading from the old layout (with `agents` inside): disable
+`agents-compact-idle.timer`, delete its two unit files, run `install.sh`, and
+install `claude-agents-kit` if you use `agents` or the other mods.
 
 ## License
 
