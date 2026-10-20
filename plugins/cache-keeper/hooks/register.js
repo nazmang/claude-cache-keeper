@@ -11,9 +11,7 @@
 // draft. A cold send rewrites the whole context into the cache.
 //
 // Each session compacts only itself, so there is no shared loop to coordinate.
-// Fallback for sessions started without the mod: `cache-keeper-idle` from a
-// systemd timer (window 53-59 min). The mod fires earlier, so the timer then
-// sees nothing left to compact.
+// A session started before the mod was installed does not have it: restart it.
 
 // Thresholds can be moved with environment variables (handy for a live test).
 let CACHE_MIN = 60

@@ -30,17 +30,15 @@ short summary, so the next wake-up is small.
 | part | what it does | needs |
 |---|---|---|
 | `plugins/cache-keeper/` (the mod) | Every session watches its own idle time. At minute 50, if the context is above 60k tokens, it compacts itself (`$.session.compact()`). `/cache` shows how long the cache has left. If you type into a session whose cache has already gone cold, it asks first: compact then send, send as is, or keep the draft. | Claude Code with mods (tested on 2.1.296) |
-| `bin/cache-keeper-idle` | Fallback for sessions started without the mod: compacts tmux sessions idle 53–59 min by typing `/compact` into their pane. | Python 3, tmux |
-| `systemd/` | Runs `cache-keeper-idle` every 2 min. Optional. | systemd user session, tmux |
 | `statusline/` | `💾 42m` countdown in the status line; yellow under 10 min, grey when expired. | `jq` |
 
-The mod is all you need, and it works without tmux. The timer is an optional
-safety net for sessions that run **without** the mod: started before you
-installed it (a running session never loads a new mod), or started with
-settings that do not list it. It types `/compact` into a tmux pane, so it only
-reaches sessions inside tmux. Once every session has been restarted with the
-mod, it has nothing left to do: on our machine it fired 4 times on install day
-and never in the week after. The status line lets a human see it all.
+Each session compacts itself, so there is no daemon, no timer and no tmux
+requirement. A session started before the mod was installed does not have it:
+restart it once.
+
+> Until October 2026 the repo also shipped a systemd timer that typed
+> `/compact` into idle tmux panes as a fallback. After the mod was installed it
+> fired 4 times on the first day and never again in a week, so it was removed.
 
 ## Does it pay off
 
@@ -77,9 +75,8 @@ git clone https://github.com/nazmang/claude-cache-keeper ~/src/claude-cache-keep
 ~/src/claude-cache-keeper/install.sh
 ```
 
-The installer cuts a release (`release.sh`), links `cache-keeper-idle` and
-`cache-segment.sh` from it into `~/.local/bin` and enables the systemd timer. It does not touch `settings.json`; add this
-yourself:
+The installer cuts a release (`release.sh`) and links `cache-segment.sh` from it
+into `~/.local/bin`. It does not touch `settings.json`; add this yourself:
 
 ```jsonc
 // ~/.claude/settings.json
@@ -100,19 +97,14 @@ Or try a mod in one session: `claude --plugin-dir ~/src/claude-cache-keeper/plug
 > environment it was not picked up in our tests (Claude Code 2.1.296).
 
 > **Running sessions do not pick the mod up**, not even with `/reload-plugins`:
-> the plugin dir list is read at process start. Restart them (after `/compact`!)
-> or rely on the systemd fallback.
+> the plugin dir list is read at process start. Restart them (after `/compact`!).
 
 ## Usage
 
 - Inside a session: `/cache` →
   `cache left ~40 min; context 120k; will compact after 30 more min idle`.
-- `cache-keeper-idle --dry-run` — what the fallback would compact right now.
-- Log of the fallback: `~/.local/state/cache-keeper/idle.log`.
 - Is the mod working? It writes no log file. Look for `compact_boundary` in a
-  session's transcript about 50 minutes after its last reply. The log above has
-  only the fallback's compactions. If it fills up, some sessions run without
-  the mod.
+  session's transcript about 50 minutes after its last reply, or run `/cache`.
 - A table of all live sessions with idle time, cache left and context:
   `agents status` from [claude-agents-kit](https://github.com/nazmang/claude-agents-kit).
 
@@ -123,10 +115,10 @@ point at your working tree, every half-finished save lands in every agent at
 once (we learned this the hard way). So:
 
 - `./release.sh` refuses uncommitted changes, runs `claude plugin validate` and
-  `claude plugin test` for every plugin, copies the committed `bin/`,
-  `plugins/` and `statusline/` to `~/.local/share/claude-cache-keeper/releases/<sha>`
+  `claude plugin test` for every plugin, copies the committed `plugins/` and
+  `statusline/` to `~/.local/share/claude-cache-keeper/releases/<sha>`
   and switches `current` atomically. `--list`, `--rollback <sha>`.
-- Settings, `~/.local/bin/cache-keeper-idle` and the timer point at
+- Settings and `~/.local/bin/cache-segment.sh` point at
   `~/.local/share/claude-cache-keeper/current/...`, never at the repo.
 - It also refuses untracked files: a file that only exists in your tree
   would be missing from every other clone (`release.sh` itself once was).
@@ -141,10 +133,8 @@ once (we learned this the hard way). So:
 | `CACHE_KEEPER_MIN_TOKENS` | 60000 | mod: skip smaller contexts |
 | `CACHE_KEEPER_CACHE_MIN` | 60 | mod: cache TTL |
 | `CACHE_KEEPER_TICK_MS` | 60000 | mod: check interval |
-| `COMPACT_FROM` / `COMPACT_TO` | 53 / 59 | `cache-keeper-idle` window |
-| `MIN_CTX` | 60000 | `cache-keeper-idle` threshold |
 | `CACHE_TTL_MIN` | 60 | status line |
-| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads (status line, `/cache`, the dialog, the log). Unset: the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` - `ru…` means Russian, anything else English. The text the model gets is never translated |
+| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads (status line, `/cache`, the dialog). Unset: the first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` - `ru…` means Russian, anything else English. The text the model gets is never translated |
 
 If you are on the 5-minute cache TTL (e.g. usage overage), these defaults do
 not help — the cache is gone long before minute 50.
@@ -153,9 +143,6 @@ not help — the cache is gone long before minute 50.
 
 - The mod uses `$.session.compact()`, which refuses while a turn is running;
   the next tick retries. A half-typed draft in the input box is preserved.
-- `cache-keeper-idle` types `/compact` into a tmux pane only if the session
-  status is `idle` and the input box is empty (detected on screen after the
-  `❯` prompt). Sessions outside tmux are never touched.
 - Subagent turns do not reset the idle clock: they have their own cache.
 - The cold-cache question only stops prompts typed by a person (terminal or
   phone bridge); messages from other sessions, task notifications and
@@ -170,9 +157,9 @@ not help — the cache is gone long before minute 50.
 - Do not decide that `/compact` has finished by looking at the screen: an old
   `Compacted` line may still be visible. Check the transcript for a new
   `compact_boundary`.
-- The timer interval must be well below the compaction window. With a 5-minute
-  timer (which really fires every ~5.5 min) and a 4-minute window, a 191k
-  session slipped through.
+- A compaction from inside the session beats one typed in from outside: an
+  external timer had to guess from the screen whether the input box was empty
+  and whether the session was busy.
 - Before restarting a session with `--resume`, compact it first, otherwise the
   whole uncompacted tail is written to the cache again.
 - The last `usage` in a transcript overstates the context if a compaction came
@@ -191,17 +178,18 @@ claude plugin validate plugins/cache-keeper && claude plugin test plugins/cache-
 ## Uninstall
 
 ```bash
-systemctl --user disable --now cache-keeper-idle.timer
-rm ~/.config/systemd/user/cache-keeper-idle.{service,timer} ~/.local/bin/{cache-keeper-idle,cache-segment.sh}
+rm ~/.local/bin/cache-segment.sh
 ```
 
 Remove `CLAUDE_CODE_PLUGIN_DIRS` and the status line from `settings.json`, then
-restart the sessions. `~/.local/share/claude-cache-keeper/` and
-`~/.local/state/cache-keeper/` can be deleted afterwards.
+restart the sessions. `~/.local/share/claude-cache-keeper/` can be deleted
+afterwards.
 
-Upgrading from the old layout (with `agents` inside): disable
-`agents-compact-idle.timer`, delete its two unit files, run `install.sh`, and
-install `claude-agents-kit` if you use `agents` or the other mods.
+Upgrading from an older layout: remove the timer if you have one
+(`systemctl --user disable --now agents-compact-idle.timer cache-keeper-idle.timer`,
+then delete their unit files from `~/.config/systemd/user/` and
+`~/.local/bin/cache-keeper-idle`), run `install.sh`, and install
+`claude-agents-kit` if you use `agents` or the other mods.
 
 ## License
 

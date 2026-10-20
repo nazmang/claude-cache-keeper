@@ -1,6 +1,0 @@
-[Unit]
-Description=Compact idle Claude Code sessions before their prompt cache expires (cache-keeper-idle)
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/cache-keeper-idle

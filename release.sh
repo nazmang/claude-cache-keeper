@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publishes the committed state of bin/, plugins/ and statusline/ to a stable
+# Publishes the committed state of plugins/ and statusline/ to a stable
 # copy that running sessions load. Sessions hot-reload a mod whenever its files
 # change, so they must never point at the working tree you are editing.
 #
@@ -33,12 +33,11 @@ if command -v claude >/dev/null; then
     fi
   done
 fi
-python3 -m py_compile bin/cache-keeper-idle
 
 sha=$(git rev-parse --short HEAD)
 mkdir -p "$DEST/releases"
 rm -rf "$DEST/releases/$sha.tmp" && mkdir -p "$DEST/releases/$sha.tmp"
-git archive HEAD bin plugins statusline | tar -x -C "$DEST/releases/$sha.tmp"
+git archive HEAD plugins statusline | tar -x -C "$DEST/releases/$sha.tmp"
 rm -rf "$DEST/releases/$sha" && mv "$DEST/releases/$sha.tmp" "$DEST/releases/$sha"
 switch "$sha"
 # keep the last 5

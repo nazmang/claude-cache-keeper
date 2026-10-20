@@ -3,23 +3,12 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
 BIN=${BIN:-$HOME/.local/bin}
-UNITS=$HOME/.config/systemd/user
 
 CUR=${DEST:-$HOME/.local/share/claude-cache-keeper}/current
 "$REPO/release.sh"
-mkdir -p "$BIN" "$UNITS"
-ln -sfn "$CUR/bin/cache-keeper-idle" "$BIN/cache-keeper-idle"
+mkdir -p "$BIN"
 ln -sfn "$CUR/statusline/cache-segment.sh" "$BIN/cache-segment.sh"
-echo "linked: $BIN/cache-keeper-idle, $BIN/cache-segment.sh"
-
-if command -v systemctl >/dev/null && command -v tmux >/dev/null; then
-  cp "$REPO"/systemd/cache-keeper-idle.{service,timer} "$UNITS/"
-  systemctl --user daemon-reload
-  systemctl --user enable --now cache-keeper-idle.timer
-  echo "enabled: cache-keeper-idle.timer"
-else
-  echo "skipped systemd timer (needs systemd and tmux)"
-fi
+echo "linked: $BIN/cache-segment.sh"
 
 cat <<MSG
 
