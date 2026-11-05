@@ -11,8 +11,9 @@ cache expires, so the next message does not pay to rewrite the whole context.
 
 [Русская версия](README.ru.md)
 
-- **−89 %** tokens written to the cache per cold wake-up (536k → 61k)
-- **−63 %** cost per request on a machine with ~10 long-lived sessions
+- **−87 %** tokens written to the cache per cold wake-up (547k → 69k, 16 days)
+- **−63 %** cost per request, **2.9M** input-token equivalents saved a day, net,
+  on a machine with ~10 long-lived sessions
 - No daemon, no timer, no tmux: every session looks after itself
 
 ## The problem
@@ -133,26 +134,29 @@ not help: the cache is gone long before minute 50.
 
 Measured on one machine with ~10 long-lived sessions (an agent team in tmux plus
 project tabs), from the transcripts' `usage` fields only. Cost is in input-token
-equivalents (1-hour cache write 2.0, cache read 0.1, input 1.0, output 5.0), so
-models with different prices add up.
+equivalents: a cache write counts ×2, a cache read ×0.1, input ×1, output ×5,
+so models with different prices add up.
 
-| per day, average | before (9 days) | after (6 days) |
-|---|---|---|
-| requests | 1041 | 1577 |
-| cold wake-ups (> 60 min idle) | 11 | 21 |
-| tokens written to the cache **per cold wake-up** | 536k | **61k** (−89 %) |
-| cache writes on cold wake-ups | 5.9M | 1.3M (−78 %) |
-| cost per request | 67k | **25k** (−63 %) |
+| | before the mod | first week (Oct 14–19) | 16 days (Oct 20 – Nov 4) |
+|---|---|---|---|
+| tokens written to the cache **per cold wake-up** | 547k | 61k | **69k** (−87 %) |
+| cost per request | 72k | 24k | **27k** (−63 %) |
+| requests per day | 912 | 1480 | 1973 |
+| cost per day | 65.9M | 36.2M | 53.0M |
 
+Over the 16 days the mod saved **46.7M equivalents net, 2.9M a day**: about
+0.9 of a day of all the work done on that machine in the period.
+
+- **Compactions.** 345 in total, 281 of them by the mod. In 202 cases the
+  session later woke up on a cold cache and wrote 60k on average instead of
+  213k. The compactions themselves cost 15M equivalents and saved 61.7M.
+- **Why the daily cost grew again.** Twice as many requests (new projects) and
+  long working sessions in the last 9 days. A single request did not get more
+  expensive.
 - The per-wake-up line is the clean effect: it barely depends on how much work
-  was done. The per-request drop also includes other changes in how the
-  sessions were used.
-- Compactions are not free: each one reads the context from the cache and
-  writes a summary (~5k output tokens). Over 6 days 158 compactions cost about
-  6.5M equivalents and saved about 26M on the wake-ups that followed: net
-  ≈ 3M a day.
-- 8 of 158 sessions were never woken again: that compaction was wasted. A
-  context under `CACHE_KEEPER_MIN_TOKENS` is skipped for the same reason.
+  was done.
+- Not counted: sessions on other machines driven through Remote Control, whose
+  transcripts live on those machines.
 
 To measure your own: compare the average `cache_creation_input_tokens` of the
 first request after more than an hour of silence, before and after installing.
