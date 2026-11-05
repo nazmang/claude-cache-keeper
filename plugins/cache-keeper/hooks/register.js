@@ -62,6 +62,7 @@ export const STRINGS = {
     plan_small: 'context is below the {k}k threshold - will not compact',
     plan_after: 'will compact after {n} more min idle',
     plan_open: 'compaction window is open',
+    plan_expired: 'cache has expired - the next message rewrites the whole context',
   },
   ru: {
     cmd_desc: 'Сколько ещё живёт кэш промпта и когда сессия сожмёт себя сама',
@@ -83,6 +84,7 @@ export const STRINGS = {
     plan_small: 'контекст меньше порога {k}k - сжимать не буду',
     plan_after: 'сожму через {n} мин простоя',
     plan_open: 'окно сжатия открыто',
+    plan_expired: 'кэш истёк - следующее сообщение перепишет весь контекст',
   },
 }
 
@@ -142,6 +144,8 @@ export function coldVerdict({ idleMin, tokens, origin, turnId, cacheMin, minToke
 function compactThenTell($, k) {
   ;(async () => {
     await $.clock.sleep(300)
+    if (compacting) return     // a tick is already compacting this session
+    compacting = true
     try {
       await $.session.compact()
       lastRequest = await $.clock.now()
@@ -149,6 +153,8 @@ function compactThenTell($, k) {
       $.ui.log(t('press_enter', { note: lastNote }))
     } catch (err) {
       $.ui.log(t('cold_failed', { err: err?.message ?? err }))
+    } finally {
+      compacting = false
     }
   })()
 }
@@ -173,7 +179,7 @@ export function register(on) {
 
   // A main-thread request to the model refreshes the cache. Subagents have their own.
   on('turn.start', async ($, e, next) => {
-    lastRequest = (await $.clock.now())
+    if (e.agentId === undefined) lastRequest = (await $.clock.now())
     return next(e)
   })
   on('turn.complete', async ($, e, next) => {
@@ -212,14 +218,16 @@ export function register(on) {
     const idle = await minutesIdle($)
     const left = Math.max(0, CACHE_MIN - idle)
     const usage = await $.session.usage()
-    const tokens = Math.round((usage.context?.tokens ?? 0) / 1000)
-    const plan = tokens * 1000 < MIN_TOKENS
+    const raw = usage.context?.tokens ?? 0
+    const plan = raw < MIN_TOKENS
       ? t('plan_small', { k: MIN_TOKENS / 1000 })
-      : idle < COMPACT_AT_MIN
-        ? t('plan_after', { n: Math.ceil(COMPACT_AT_MIN - idle) })
-        : t('plan_open')
+      : idle >= CACHE_MIN
+        ? t('plan_expired')
+        : idle < COMPACT_AT_MIN
+          ? t('plan_after', { n: Math.ceil(COMPACT_AT_MIN - idle) })
+          : t('plan_open')
     return {
-      text: t('report', { left: Math.floor(left), k: tokens, plan }) +
+      text: t('report', { left: Math.floor(left), k: Math.round(raw / 1000), plan }) +
         (lastNote ? `\n${t('last', { note: lastNote })}` : ''),
     }
   })
