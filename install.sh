@@ -15,7 +15,7 @@ cat <<MSG
 Add to ~/.claude/settings.json to load the mod in every new session:
 
   "env": { "CLAUDE_CODE_PLUGIN_DIRS": "$CUR/plugins/cache-keeper" },
-  "statusLine": { "type": "command", "command": "<your status line script>", "refreshInterval": 30 }
+  "statusLine": { "type": "command", "command": "$CUR/statusline/example-statusline.sh", "refreshInterval": 30 }
 
 Already running sessions pick the mod up only after a restart.
 MSG
