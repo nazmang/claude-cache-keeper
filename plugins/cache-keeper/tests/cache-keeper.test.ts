@@ -53,6 +53,16 @@ test('activity restarts the countdown', async ($, on) => {
   expect(calls.compact).toBe(1)
 })
 
+test('a subagent turn does not restart the countdown', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(45 * MIN)
+  await $.turn.start({ turnId: 's1', agentId: 'sub1', prompt: 'x' } as any)
+  await $.turn.complete({ turnId: 's1', agentId: 'sub1', answer: 'ok', durationMs: 1000, isAborted: false, usage: null } as any)
+  await clock.advance(6 * MIN)
+  expect(calls.compact).toBe(1)
+})
+
 test('two idle hours - one compaction per window', async ($, on) => {
   const { clock, calls } = setup(on, 200_000)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
@@ -146,4 +156,14 @@ test('cold-cache question only for a person, an idle session and a big context',
   expect(coldVerdict({ ...base, idleMin: 30 })).toBe(false)
   expect(coldVerdict({ ...base, tokens: 10_000 })).toBe(false)
   expect(coldVerdict({ ...base, turnId: 't1' })).toBe(false)
+})
+
+test('/cache says so when the cache has already expired', async ($, on) => {
+  // compaction window moved past the TTL: the session just goes cold
+  const { clock, calls } = setup(on, 120_000, undefined, { CACHE_KEEPER_AT_MIN: '1000' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(75 * MIN)
+  expect(calls.compact).toBe(0)
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/cache left ~0 min; context 120k; cache has expired/)
 })
