@@ -10,19 +10,28 @@
 # once the cache is gone: the next request will rewrite the whole context into
 # the cache at full price. Counts from the last assistant reply in the transcript.
 #
-# Language: AGENTS_LANG=ru|en, otherwise the first non-empty of LC_ALL,
-# LC_MESSAGES, LANG ("ru..." = Russian, anything else English). Russian:
-# "💾 42м", "💾 кэш истёк".
+# Language: the languages are the lines of STRINGS below. AGENTS_LANG wins if
+# it is one of them; otherwise the language part of the first non-empty of
+# LC_ALL, LC_MESSAGES, LANG (uk_UA.UTF-8 -> uk); anything else is English.
+# Russian: "💾 42м", "💾 кэш истёк"; Ukrainian: "💾 42хв", "💾 кеш сплив".
 #
 # Set "statusLine": {"refreshInterval": 30} in settings.json, otherwise the line
 # is not redrawn while the session is idle and the countdown freezes.
 
 TTL_MIN=${CACHE_TTL_MIN:-60}
-case "${AGENTS_LANG:-}" in
-  ru|en) L=$AGENTS_LANG ;;
-  *) case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) L=ru ;; *) L=en ;; esac ;;
-esac
-if [ "$L" = ru ]; then UNIT=м; EXPIRED="кэш истёк"; else UNIT=m; EXPIRED=expired; fi
+# One line per language: code|minutes unit|expired text. A language is one more line.
+STRINGS='en|m|expired
+ru|м|кэш истёк
+uk|хв|кеш сплив'
+row() {  # the STRINGS line for language $1, if any
+  case "$1" in ''|*[!a-z]*) return 1 ;; esac
+  printf '%s\n' "$STRINGS" | grep -m1 "^$1|"
+}
+LOC=${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}
+LOC=${LOC%%[_.@-]*}
+ROW=$(row "$(printf '%s' "${AGENTS_LANG:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')") ||
+  ROW=$(row "$(printf '%s' "$LOC" | tr '[:upper:]' '[:lower:]')") || ROW=$(row en)
+IFS='|' read -r _ UNIT EXPIRED <<<"$ROW"
 GREEN='\033[32m'; YELLOW='\033[33m'; GREY='\033[90m'; RESET='\033[0m'
 
 TRANSCRIPT=$(jq -r '.transcript_path // empty')

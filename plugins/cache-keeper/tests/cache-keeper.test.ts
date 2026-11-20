@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { coldVerdict } from '../hooks/register.js'
+import { chooseLang, coldVerdict, STRINGS } from '../hooks/register.js'
 
 const MIN = 60_000
 
@@ -242,4 +242,46 @@ test('/cache says so when the cache has already expired', async ($, on) => {
   expect(calls.compact).toBe(0)
   const a = await $.command.run({ command: 'cache', args: '' })
   expect(a.text).toMatch(/cache left ~0 min; context 120k; cache has expired/)
+})
+
+test('/cache speaks Ukrainian under a Ukrainian locale', async ($, on) => {
+  const { clock } = setup(on, 120_000, undefined, { LANG: 'uk_UA.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(20 * MIN)
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/кеш: лишилося ~40 хв; контекст 120k; стисну через 30 хв простою/)
+})
+
+test('AGENTS_LANG=uk beats a Russian locale; the log is Ukrainian too', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000, undefined, { AGENTS_LANG: 'uk', LANG: 'ru_RU.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(51 * MIN)
+  expect(calls.logs[0]).toMatch(/стиснуто після 5\d хв простою/)
+})
+
+test('an unsupported AGENTS_LANG falls back to the locale, then English', async ($, on) => {
+  const { clock } = setup(on, 120_000, undefined, { AGENTS_LANG: 'de', LANG: 'de_DE.UTF-8' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(20 * MIN)
+  expect((await $.command.run({ command: 'cache', args: '' })).text).toMatch(/^cache left ~40 min/)
+})
+
+test('language pick: keys of STRINGS, locale language part, English otherwise', async () => {
+  expect(chooseLang('', '', '', 'uk_UA.UTF-8')).toBe('uk')
+  expect(chooseLang('', '', '', 'ru_RU')).toBe('ru')
+  expect(chooseLang('uk', '', '', 'ru_RU.UTF-8')).toBe('uk')
+  expect(chooseLang('de', '', '', 'uk_UA.UTF-8')).toBe('uk')
+  expect(chooseLang('de', '', '', '')).toBe('en')
+  expect(chooseLang('', 'C', '', 'uk_UA.UTF-8')).toBe('en')
+  expect(chooseLang('', '', 'uk_UA.UTF-8', 'ru_RU.UTF-8')).toBe('uk')
+  expect(chooseLang(undefined, undefined, undefined, undefined)).toBe('en')
+})
+
+test('every language has exactly the English keys and placeholders', async () => {
+  const en = Object.keys(STRINGS.en).sort()
+  const ph = (s: string) => (s.match(/\{\w+\}/g) ?? []).sort().join(',')
+  for (const lang of ['ru', 'uk']) {
+    expect(Object.keys(STRINGS[lang]).sort()).toEqual(en)
+    for (const k of en) expect(`${lang}.${k}:${ph(STRINGS[lang][k])}`).toBe(`${lang}.${k}:${ph(STRINGS.en[k])}`)
+  }
 })
