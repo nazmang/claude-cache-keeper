@@ -63,13 +63,42 @@ test('a subagent turn does not restart the countdown', async ($, on) => {
   expect(calls.compact).toBe(1)
 })
 
-test('two idle hours - one compaction per window', async ($, on) => {
+test('hours of idling - one compaction, never a summary of a summary', async ($, on) => {
   const { clock, calls } = setup(on, 200_000)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await clock.advance(120 * MIN)
-  // the second window opens 50 min after the first compaction; the usage stub
-  // still reports 200k - in real life the context is small after compaction
+  // the usage stub keeps reporting 200k after compaction: the context stays
+  // above the threshold, and yet nothing new has happened to summarise
+  await clock.advance(6 * 60 * MIN)
+  expect(calls.compact).toBe(1)
+})
+
+test('main-thread activity after a compaction re-arms it', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(51 * MIN)
+  expect(calls.compact).toBe(1)
+  await clock.advance(30 * MIN)
+  await $.turn.start({ turnId: 't1', prompt: 'x' } as any)
+  await $.turn.complete({ turnId: 't1', answer: 'ok', durationMs: 1000, isAborted: false, usage: null })
+  await clock.advance(51 * MIN)
   expect(calls.compact).toBe(2)
+})
+
+test('/cache says when it has already compacted and waits for activity', async ($, on) => {
+  const { clock } = setup(on, 200_000)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(51 * MIN)
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/already compacted - waits for new activity/)
+})
+
+test('a subagent turn after a compaction does not re-arm it', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(51 * MIN)
+  await $.turn.complete({ turnId: 's1', agentId: 'sub1', answer: 'ok', durationMs: 1000, isAborted: false, usage: null } as any)
+  await clock.advance(120 * MIN)
+  expect(calls.compact).toBe(1)
 })
 
 test('compaction skipped by another hook - log the reason', async ($, on) => {
@@ -78,6 +107,53 @@ test('compaction skipped by another hook - log the reason', async ($, on) => {
   await clock.advance(51 * MIN)
   expect(calls.compact).toBe(1)
   expect(calls.logs[0]).toMatch(/compaction skipped: busy/)
+})
+
+test('a skipped compaction is not a request - the cache still expires at 60', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000, 'busy')
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(51 * MIN)
+  expect(calls.compact).toBe(1)
+  await clock.advance(10 * MIN)
+  expect(calls.compact).toBe(1)   // no retry every minute after a skip
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/cache left ~0 min; context 200k; cache has expired/)
+})
+
+test('a cold-path compaction skipped by another hook leaves the cache expired', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000, 'busy', { CACHE_KEEPER_AT_MIN: '1000' })
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e: any) => {
+    const qs = (e.input ?? e).questions ?? []
+    return { result: { questions: qs, answers: Object.fromEntries(qs.map(q => [q.question, 'Compact, then send'])) } }
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(75 * MIN)
+  const r = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } } as any)
+  expect((r as any).drop).toMatch(/compacting first/)
+  await clock.advance(1000)
+  expect(calls.compact).toBe(1)
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/cache has expired/)
+})
+
+test('a resumed session counts from its last response, not from the restart', async ($, on) => {
+  const { clock, calls } = setup(on, 200_000)
+  on('classic.SessionStart', () => ({}))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 45 * 60 } as any)
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/cache left ~15 min/)
+  await clock.advance(6 * MIN)
+  expect(calls.compact).toBe(1)
+})
+
+test('resume info that arrives before session.start is kept', async ($, on) => {
+  const { clock } = setup(on, 200_000)
+  on('classic.SessionStart', () => ({}))
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 2 * 60 * 60 } as any)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const a = await $.command.run({ command: 'cache', args: '' })
+  expect(a.text).toMatch(/cache has expired/)
 })
 
 test('/cache reports the cache state', async ($, on) => {
