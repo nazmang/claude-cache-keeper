@@ -146,11 +146,16 @@ claude --plugin-dir ~/src/claude-cache-keeper/plugins/cache-keeper
 | `CACHE_KEEPER_CACHE_MIN` | `60` | prompt cache TTL, minutes |
 | `CACHE_KEEPER_TICK_MS` | `60000` | how often the mod checks |
 | `CACHE_TTL_MIN` | `60` | cache TTL for the status line |
-| `AGENTS_LANG` | from locale | `ru` or `en` for everything a person reads |
+| `AGENTS_LANG` | from locale | `en`, `ru` or `uk` for everything a person reads |
 
-With `AGENTS_LANG` unset, the first non-empty of `LC_ALL`, `LC_MESSAGES`,
-`LANG` decides: `ru…` means Russian, anything else English. The text the model
-sees is never translated. The `CACHE_KEEPER_*` variables are read from
+The mod and the status line speak English, Russian and Ukrainian.
+`AGENTS_LANG` wins when it names one of them; otherwise the language part of the
+first non-empty of `LC_ALL`, `LC_MESSAGES`, `LANG` decides (`uk_UA.UTF-8` → `uk`,
+`ru_RU` → `ru`), and anything else (`C`, `de_DE`…) means English. The text the
+model sees is never translated. To add a language, add one more entry with the
+same keys as `en` to `STRINGS` in `plugins/cache-keeper/hooks/register.js` and
+one more line to `STRINGS` in `statusline/cache-segment.sh`; no code changes,
+a missing key falls back to English, and the tests check key parity. The `CACHE_KEEPER_*` variables are read from
 `settings.json` `env`, not from the shell.
 
 If you are on the 5-minute cache TTL (e.g. usage overage), these defaults do

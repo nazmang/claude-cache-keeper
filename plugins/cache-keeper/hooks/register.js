@@ -32,19 +32,26 @@ let stopTick = null
 let lastFailed = false
 
 // --- language --------------------------------------------------------------
-// AGENTS_LANG (ru|en) wins; otherwise the first non-empty of LC_ALL,
-// LC_MESSAGES, LANG: "ru..." is Russian, anything else English. Picked once,
-// when the session starts. Only text a person reads is translated.
+// The languages are the keys of STRINGS: AGENTS_LANG wins if it is one of
+// them; otherwise the language part of the first non-empty of LC_ALL,
+// LC_MESSAGES, LANG (uk_UA.UTF-8 -> uk); anything else is English. A language
+// is one more entry in STRINGS; a key it lacks falls back to English. Picked
+// once, when the session starts. Only text a person reads is translated.
 let LANG = 'en'
+
+// Pure part of the pick, for tests: `locales` are LC_ALL, LC_MESSAGES, LANG.
+export function chooseLang(forced, ...locales) {
+  const f = String(forced ?? '').trim().toLowerCase()
+  if (Object.hasOwn(STRINGS, f)) return f
+  const loc = locales.map((v) => String(v ?? '').trim()).find((v) => v) ?? ''
+  const code = loc.toLowerCase().split(/[_.@-]/)[0]
+  return Object.hasOwn(STRINGS, code) ? code : 'en'
+}
 
 async function pickLang($) {
   // $.env.get wants a literal name: the mod's variables must be listable
-  const forced = String((await $.env.get('AGENTS_LANG')) ?? '').trim().toLowerCase()
-  if (forced === 'ru' || forced === 'en') return forced
-  const loc = String((await $.env.get('LC_ALL')) ?? '').trim() ||
-    String((await $.env.get('LC_MESSAGES')) ?? '').trim() ||
-    String((await $.env.get('LANG')) ?? '').trim()
-  return /^ru/i.test(loc) ? 'ru' : 'en'
+  return chooseLang(await $.env.get('AGENTS_LANG'), await $.env.get('LC_ALL'),
+    await $.env.get('LC_MESSAGES'), await $.env.get('LANG'))
 }
 
 export const STRINGS = {
@@ -94,10 +101,33 @@ export const STRINGS = {
     plan_expired: 'кэш истёк - следующее сообщение перепишет весь контекст',
     plan_done: 'уже сжато - снова сожму только после новой активности',
   },
+  uk: {
+    cmd_desc: 'Скільки ще живе кеш промпту і коли сесія стисне себе сама',
+    skipped: 'стиснення пропущено: {why}',
+    compacted: 'стиснуто після {min} хв простою (було {k}k)',
+    failed: 'стиснути не вдалося: {err}',
+    cold_compacted: 'стиснуто перед холодним надсиланням (було {k}k)',
+    press_enter: '{note} - тисни Enter, повідомлення піде',
+    cold_failed: 'стиснути не вдалося: {err} - тисни Enter, піде як є',
+    ask: 'Кеш промпту сплив {min} хв тому. Якщо надіслати зараз, увесь контекст (~{k}k токенів) знову запишеться в кеш за повною ціною. Що робимо?',
+    header: 'холодний кеш',
+    compact_send: 'Стиснути й надіслати',
+    send: 'Надіслати як є',
+    keep: 'Не надсилати',
+    drop_compact: 'cache-keeper: спершу стискаю; коли напишу «готово», тисни Enter ще раз',
+    drop_keep: 'cache-keeper: не надіслано (кеш холодний); текст лишився в полі введення',
+    report: 'кеш: лишилося ~{left} хв; контекст {k}k; {plan}',
+    last: 'останнє: {note}',
+    plan_small: 'контекст менший за поріг {k}k - стискати не буду',
+    plan_after: 'стисну через {n} хв простою',
+    plan_open: 'вікно стиснення відкрите',
+    plan_expired: 'кеш сплив - наступне повідомлення перепише весь контекст',
+    plan_done: 'уже стиснуто - знову стисну лише після нової активності',
+  },
 }
 
 export function t(key, vars = {}) {
-  const tpl = STRINGS[LANG][key] ?? STRINGS.en[key] ?? key
+  const tpl = STRINGS[LANG]?.[key] ?? STRINGS.en[key] ?? key
   return tpl.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
 }
 
