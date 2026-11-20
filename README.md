@@ -14,6 +14,8 @@ cache expires, so the next message does not pay to rewrite the whole context.
 - **−87 %** tokens written to the cache per cold wake-up (547k → 69k, 16 days)
 - **−63 %** cost per request, **2.9M** input-token equivalents saved a day, net,
   on a machine with ~10 long-lived sessions
+- Those are one setup's numbers; with a large fixed context the gain is much
+  smaller, see [Does it pay off](#does-it-pay-off)
 - No daemon, no timer, no tmux: every session looks after itself
 
 ## The problem
@@ -44,11 +46,35 @@ wake-ups.
 1. Every session tracks its own idle time.
 2. At minute 50, if the context is above 60k tokens, the session compacts
    itself (`$.session.compact()`). Compaction still reads the context from the
-   warm cache and leaves a short summary.
+   warm cache and leaves a short summary. Once per idle stretch: the session
+   compacts again only after a new turn or prompt, so a night of idling does
+   not turn into a summary of a summary every 50 minutes.
+   A resumed session counts from its last response, not from the restart.
 3. If you type into a session whose cache has already gone cold, the mod asks
    first: **compact then send**, **send as is**, or **keep the draft**.
 4. `/cache` shows how long the cache has left and what the mod plans to do.
 5. An optional status line segment shows a `💾 42m` countdown.
+
+## Claude Code's built-in idle compaction
+
+Since v2.1.299 Claude Code does part of this itself. The `idleCompaction`
+setting (on by default) compacts an idle conversation of 200k+ tokens at
+about minute 54, before the 1-hour cache expires. The threshold is moved with
+`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` (values below 100000 are raised to
+100000); `"idleCompaction": false` turns it off. See the
+[settings reference](https://code.claude.com/docs/en/settings-reference#idlecompaction)
+and the [changelog](https://code.claude.com/docs/en/changelog).
+
+What the mod adds on top:
+
+- compacts from 60k tokens (the built-in floor is 100k, the default 200k);
+- asks before sending into an expired cache;
+- `/cache` and the status line countdown.
+
+The mod fires at minute 50, before the built-in one, so they do not compact
+twice: by minute 54 the context is already small. If your contexts are mostly
+above 200k and you do not need the cold-cache question, the built-in feature
+alone is enough.
 
 ## Quick start
 
@@ -158,8 +184,23 @@ Over the 16 days the mod saved **46.7M equivalents net, 2.9M a day**: about
 - Not counted: sessions on other machines driven through Remote Control, whose
   transcripts live on those machines.
 
+**How much you save depends on what is left after compaction.** A compaction
+shrinks the conversation, not the fixed part of the context: CLAUDE.md, memory,
+the skills list, tool schemas. That part is often 100k+ tokens and stays after
+every compaction. In the setup above a cold wake-up after compaction wrote
+about 60–70k, fixed part included, hence 547k → 69k. A reviewer measured about −30 % on sessions with a large
+fixed part. Shrinking that part is the bigger lever: it is paid on every
+wake-up, compacted or not.
+
 To measure your own: compare the average `cache_creation_input_tokens` of the
 first request after more than an hour of silence, before and after installing.
+
+## Limitations
+
+- Linux only: `release.sh` uses `mv -T`, the status line uses `tac` and GNU
+  `date -d`.
+- A laptop asleep through minutes 50–60 misses the window: the session wakes up
+  on a cold cache, and the mod can only ask before you send.
 
 ## Safety
 
