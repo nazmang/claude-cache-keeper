@@ -21,6 +21,12 @@ let TICK_MS = 60 * 1000
 
 let lastRequest = 0            // set on load: assume the cache is fresh
 let compacting = false
+// Compact only what is new: after a compaction the context may still sit above
+// MIN_TOKENS (a large fixed part), and compacting it again would summarise a
+// summary every 50 minutes all night. A main-thread turn or a prompt re-arms.
+let armed = true
+let skippedFor = -1            // lastRequest a hook skipped compaction for: no retry in that window
+let resumed = null             // { last, at }: last response time a resume reported
 let lastNote = ''
 let stopTick = null
 let lastFailed = false
@@ -63,6 +69,7 @@ export const STRINGS = {
     plan_after: 'will compact after {n} more min idle',
     plan_open: 'compaction window is open',
     plan_expired: 'cache has expired - the next message rewrites the whole context',
+    plan_done: 'already compacted - waits for new activity before compacting again',
   },
   ru: {
     cmd_desc: 'Сколько ещё живёт кэш промпта и когда сессия сожмёт себя сама',
@@ -85,6 +92,7 @@ export const STRINGS = {
     plan_after: 'сожму через {n} мин простоя',
     plan_open: 'окно сжатия открыто',
     plan_expired: 'кэш истёк - следующее сообщение перепишет весь контекст',
+    plan_done: 'уже сжато - снова сожму только после новой активности',
   },
 }
 
@@ -103,6 +111,7 @@ async function tick($) {
   try {
     const idle = await minutesIdle($)
     if (idle < COMPACT_AT_MIN || idle >= CACHE_MIN) return
+    if (!armed || skippedFor === lastRequest) return
     const usage = await $.session.usage()
     const tokens = usage.context?.tokens ?? 0
     if (tokens < MIN_TOKENS) return
@@ -116,9 +125,15 @@ async function compactNow($, idle, tokens) {
   try {
     const res = await $.session.compact()
     lastFailed = false
-    lastNote = res && res.skip
-      ? t('skipped', { why: res.skip })
-      : t('compacted', { min: Math.round(idle), k: Math.round(tokens / 1000) })
+    if (res && res.skip) {
+      // no request went out: the cache keeps ageing from the last real one
+      skippedFor = lastRequest
+      lastNote = t('skipped', { why: res.skip })
+    } else {
+      lastNote = t('compacted', { min: Math.round(idle), k: Math.round(tokens / 1000) })
+      lastRequest = await $.clock.now()
+      armed = false
+    }
     $.ui.log(lastNote)
   } catch (err) {
     // compact refuses while a turn is running (that is exactly the guard
@@ -126,7 +141,13 @@ async function compactNow($, idle, tokens) {
     lastFailed = true
     lastNote = t('failed', { err: err?.message ?? err })
   }
-  if (!lastFailed) lastRequest = (await $.clock.now())
+}
+
+// A main-thread request to the model refreshes the cache and brings new
+// context worth compacting later.
+async function activity($) {
+  lastRequest = await $.clock.now()
+  armed = true
 }
 
 // Who typed it: only a person at the prompt (or on the phone bridge) can
@@ -147,9 +168,14 @@ function compactThenTell($, k) {
     if (compacting) return     // a tick is already compacting this session
     compacting = true
     try {
-      await $.session.compact()
-      lastRequest = await $.clock.now()
-      lastNote = t('cold_compacted', { k })
+      const res = await $.session.compact()
+      if (res && res.skip) {
+        lastNote = t('skipped', { why: res.skip })
+      } else {
+        lastRequest = await $.clock.now()
+        armed = false
+        lastNote = t('cold_compacted', { k })
+      }
       $.ui.log(t('press_enter', { note: lastNote }))
     } catch (err) {
       $.ui.log(t('cold_failed', { err: err?.message ?? err }))
@@ -171,23 +197,41 @@ export function register(on) {
     COMPACT_AT_MIN = num(await $.env.get('CACHE_KEEPER_AT_MIN'), COMPACT_AT_MIN)
     MIN_TOKENS = num(await $.env.get('CACHE_KEEPER_MIN_TOKENS'), MIN_TOKENS)
     TICK_MS = num(await $.env.get('CACHE_KEEPER_TICK_MS'), TICK_MS)
-    lastRequest = (await $.clock.now())
+    const now = await $.clock.now()
+    // a resume reported before this hook ran: keep its age (stale reports ignored)
+    lastRequest = resumed && now - resumed.at < 60000 ? resumed.last : now
+    resumed = null
+    armed = true
+    skippedFor = -1
     if (stopTick) stopTick.cancel()
     stopTick = $.clock.every(TICK_MS, () => tick($))
     return next(e)
   })
 
+  // A resumed or forked session's cache is as old as its last response, not
+  // as the restart. The engine reports that age on the classic SessionStart.
+  on('classic.SessionStart', async ($, e, next) => {
+    const secs = e.seconds_since_last_response
+    if ((e.source === 'resume' || e.source === 'fork') && typeof secs === 'number' && secs >= 0) {
+      const now = await $.clock.now()
+      lastRequest = now - secs * 1000
+      resumed = { last: lastRequest, at: now }
+    }
+    return next(e)
+  })
+
   // A main-thread request to the model refreshes the cache. Subagents have their own.
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) lastRequest = (await $.clock.now())
+    if (e.agentId === undefined) await activity($)
     return next(e)
   })
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) lastRequest = (await $.clock.now())
+    if (e.agentId === undefined) await activity($)
     return next(e)
   })
 
   on('prompt.submit', async ($, e, next) => {
+    if (e.origin && HUMAN.has(e.origin.kind)) armed = true
     const idle = await minutesIdle($)
     let tokens = 0
     try { tokens = (await $.session.usage()).context?.tokens ?? 0 } catch { tokens = 0 }
@@ -223,9 +267,11 @@ export function register(on) {
       ? t('plan_small', { k: MIN_TOKENS / 1000 })
       : idle >= CACHE_MIN
         ? t('plan_expired')
-        : idle < COMPACT_AT_MIN
-          ? t('plan_after', { n: Math.ceil(COMPACT_AT_MIN - idle) })
-          : t('plan_open')
+        : !armed
+          ? t('plan_done')
+          : idle < COMPACT_AT_MIN
+            ? t('plan_after', { n: Math.ceil(COMPACT_AT_MIN - idle) })
+            : t('plan_open')
     return {
       text: t('report', { left: Math.floor(left), k: Math.round(raw / 1000), plan }) +
         (lastNote ? `\n${t('last', { note: lastNote })}` : ''),
